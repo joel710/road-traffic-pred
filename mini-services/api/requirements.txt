@@ -2,7 +2,7 @@ fastapi
 uvicorn
 redis
 psycopg2-binary
-aiokafka
+asyncpg
 pydantic
 pydantic-settings
 python-multipart

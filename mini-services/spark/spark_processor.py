@@ -6,7 +6,7 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, from_json, struct, timestamp_seconds, to_timestamp
+from pyspark.sql.functions import col, from_json, struct, to_timestamp
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, FloatType, DoubleType, TimestampType, ArrayType
 import redis
 import psycopg2
@@ -52,16 +52,16 @@ def load_model():
         model = TrafficLSTM(input_size=10)
         model_path = "/app/models/global_model.pt"
         if os.path.exists(model_path):
-            model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+            try:
+                model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+            except Exception as e:
+                print(f"Error loading model: {e}")
         model.eval()
     return model
 
 def update_traffic_state(key, pdf, state):
-    junction_id = key[0]
-
     if state.exists:
-        # state.get() returns a tuple based on stateStructType
-        lags = state.get[0]
+        lags = state.get()[0]
     else:
         lags = [0.0] * 24
 
@@ -72,14 +72,14 @@ def update_traffic_state(key, pdf, state):
 
     for _, row in pdf.iterrows():
         current_features = [
-            row['hour'], row['dayofweek'], row['month'], row['is_weekend'],
-            row['hour_sin'], row['hour_cos'],
-            lags[0], lags[1], lags[2], lags[23]
+            float(row['hour']), float(row['dayofweek']), float(row['month']), float(row['is_weekend']),
+            float(row['hour_sin']), float(row['hour_cos']),
+            float(lags[0]), float(lags[1]), float(lags[2]), float(lags[23])
         ]
 
         X = torch.tensor([current_features], dtype=torch.float32).unsqueeze(1)
         with torch.no_grad():
-            prediction = m(X).item()
+            prediction = float(m(X).item())
 
         new_vehicles = float(row['Vehicles'])
         lags = [new_vehicles] + lags[:-1]
@@ -93,31 +93,39 @@ def update_traffic_state(key, pdf, state):
 
 def sink_to_redis_and_postgres(partition_iterator):
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
-    conn = psycopg2.connect(
-        dbname=POSTGRES_DB,
-        user=POSTGRES_USER,
-        password=POSTGRES_PASSWORD,
-        host=POSTGRES_HOST
-    )
-    cur = conn.cursor()
-
-    for row in partition_iterator:
-        data = row.asDict()
-        junction_id = data['Junction']
-        prediction = float(data['prediction'])
-
-        status_key = f"junction:{junction_id}:status"
-        r.set(status_key, json.dumps(data, default=str))
-        r.publish("traffic_updates", json.dumps(data, default=str))
-
-        cur.execute(
-            "INSERT INTO predictions (timestamp, junction_id, actual_vehicles, predicted_vehicles) VALUES (%s, %s, %s, %s)",
-            (data['DateTime'], junction_id, data['Vehicles'], prediction)
+    try:
+        conn = psycopg2.connect(
+            dbname=POSTGRES_DB,
+            user=POSTGRES_USER,
+            password=POSTGRES_PASSWORD,
+            host=POSTGRES_HOST
         )
+        cur = conn.cursor()
 
-    conn.commit()
-    cur.close()
-    conn.close()
+        for row in partition_iterator:
+            data = row.asDict()
+            junction_id = data['Junction']
+            prediction = float(data['prediction'])
+
+            # Use default=str for JSON serialization of timestamps
+            json_data = json.dumps(data, default=str)
+
+            status_key = f"junction:{junction_id}:status"
+            r.set(status_key, json_data)
+            r.publish("traffic_updates", json_data)
+
+            cur.execute(
+                "INSERT INTO predictions (timestamp, junction_id, actual_vehicles, predicted_vehicles) VALUES (%s, %s, %s, %s)",
+                (data['DateTime'], junction_id, data['Vehicles'], prediction)
+            )
+
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error in sink_to_redis_and_postgres: {e}")
+    finally:
+        r.close()
 
 def main():
     spark = SparkSession.builder \
@@ -136,7 +144,11 @@ def main():
         .select("data.*") \
         .withColumn("DateTime", to_timestamp(col("DateTime")))
 
-    output_schema = StructType([f if f.name != "DateTime" else StructField("DateTime", TimestampType()) for f in schema.fields] + [StructField("prediction", FloatType())])
+    output_schema = StructType([
+        f if f.name != "DateTime" else StructField("DateTime", TimestampType())
+        for f in schema.fields
+    ] + [StructField("prediction", FloatType())])
+
     state_schema = StructType([StructField("lags", ArrayType(DoubleType()))])
 
     prediction_df = traffic_df \
