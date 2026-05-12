@@ -1,0 +1,5 @@
+pyspark
+redis
+torch
+pandas
+numpy
