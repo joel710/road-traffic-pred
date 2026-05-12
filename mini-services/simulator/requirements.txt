@@ -1,0 +1,4 @@
+kafka-python-ng
+pandas
+fastapi
+uvicorn

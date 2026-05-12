@@ -20,6 +20,19 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
 
+  # Database
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: traffic_db
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+
   # Real-time State
   redis:
     image: redis:alpine
@@ -29,30 +42,40 @@ services:
   # Backend API
   backend:
     build:
-      context: .
-      dockerfile: mini-services/api/Dockerfile
+      context: ./mini-services/api
     ports:
       - "8000:8000"
     environment:
       - REDIS_HOST=redis
       - KAFKA_HOST=kafka:29092
+      - POSTGRES_HOST=db
+      - POSTGRES_DB=traffic_db
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - SIMULATOR_URL=http://simulator:8001
     depends_on:
       - redis
       - kafka
+      - db
 
   # Simulator (Producer)
   simulator:
     build:
-      context: .
-      dockerfile: mini-services/simulator/Dockerfile
+      context: ./mini-services/simulator
     environment:
       - KAFKA_HOST=kafka:29092
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data:/app/data
     depends_on:
       - kafka
 
   # Spark Cluster
   spark-master:
-    image: bitnami/spark:latest
+    build:
+      context: ./mini-services/spark
+    command: bin/spark-class org.apache.spark.deploy.master.Master
     environment:
       - SPARK_MODE=master
       - SPARK_RPC_AUTHENTICATION_ENABLED=no
@@ -64,7 +87,9 @@ services:
       - "7077:7077"
 
   spark-worker:
-    image: bitnami/spark:latest
+    build:
+      context: ./mini-services/spark
+    command: bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     environment:
       - SPARK_MODE=worker
       - SPARK_MASTER_URL=spark://spark-master:7077
@@ -74,5 +99,37 @@ services:
       - SPARK_RPC_ENCRYPTION_ENABLED=no
       - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
       - SPARK_SSL_ENABLED=no
+    volumes:
+      - ./models:/app/models
     depends_on:
       - spark-master
+      - kafka
+      - redis
+      - db
+
+  # Spark Job Submission (one-off container to submit the job)
+  spark-job:
+    build:
+      context: ./mini-services/spark
+    command: >
+      spark-submit
+      --master spark://spark-master:7077
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0
+      spark_processor.py
+    environment:
+      - KAFKA_HOST=kafka:29092
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=db
+      - POSTGRES_DB=traffic_db
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - ./models:/app/models
+    depends_on:
+      - spark-master
+      - kafka
+      - redis
+      - db
+
+volumes:
+  postgres_data:

@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+redis
+psycopg2-binary
+aiokafka
+pydantic
+pydantic-settings
+python-multipart
+httpx
