@@ -1,13 +1,16 @@
 services:
-  # Message Broker
+  # 1. Zookeeper (Lightweight JVM memory settings)
   zookeeper:
-    image: confluentinc/cp-zookeeper:latest
+    image: confluentinc/cp-zookeeper:7.5.0
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_JVM_PERFORMANCE_OPTS: "-Xmx128m -Xms128m"
+    restart: unless-stopped
 
+  # 2. Apache Kafka Broker (Aligned to topic, Lightweight JVM)
   kafka:
-    image: confluentinc/cp-kafka:latest
+    image: confluentinc/cp-kafka:7.5.0
     depends_on:
       - zookeeper
     ports:
@@ -19,8 +22,10 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_JVM_PERFORMANCE_OPTS: "-Xmx256m -Xms256m"
+    restart: unless-stopped
 
-  # Database
+  # 3. Database (PostgreSQL)
   db:
     image: postgres:15-alpine
     environment:
@@ -32,14 +37,16 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
 
-  # Real-time State
+  # 4. Cache & Real-time Pub/Sub (Redis)
   redis:
     image: redis:alpine
     ports:
       - "6379:6379"
+    restart: unless-stopped
 
-  # Backend API
+  # 5. Backend Gateway API (FastAPI) - Highly lightweight, proxying Redis status & WebSockets
   backend:
     build:
       context: ./mini-services/api
@@ -47,73 +54,22 @@ services:
       - "8000:8000"
     environment:
       - REDIS_HOST=redis
-      - KAFKA_HOST=kafka:29092
       - POSTGRES_HOST=db
       - POSTGRES_DB=traffic_db
       - POSTGRES_USER=user
       - POSTGRES_PASSWORD=password
-      - SIMULATOR_URL=http://simulator:8001
     depends_on:
       - redis
-      - kafka
       - db
+    restart: unless-stopped
 
-  # Simulator (Producer)
-  simulator:
-    build:
-      context: ./mini-services/simulator
-    environment:
-      - KAFKA_HOST=kafka:29092
-    ports:
-      - "8001:8001"
-    volumes:
-      - ./data:/app/data
-    depends_on:
-      - kafka
-
-  # Spark Cluster
-  spark-master:
-    build:
-      context: ./mini-services/spark
-    command: bin/spark-class org.apache.spark.deploy.master.Master
-    environment:
-      - SPARK_MODE=master
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_RPC_ENCRYPTION_ENABLED=no
-      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
-    ports:
-      - "8080:8080"
-      - "7077:7077"
-
-  spark-worker:
-    build:
-      context: ./mini-services/spark
-    command: bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
-    environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark-master:7077
-      - SPARK_WORKER_MEMORY=1G
-      - SPARK_WORKER_CORES=1
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_RPC_ENCRYPTION_ENABLED=no
-      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
-    volumes:
-      - ./models:/app/models
-    depends_on:
-      - spark-master
-      - kafka
-      - redis
-      - db
-
-  # Spark Job Submission (one-off container to submit the job)
-  spark-job:
+  # 6. Spark Structured Streaming Job (Single container, local[*] mode, saves ~4 GB RAM)
+  spark-processor:
     build:
       context: ./mini-services/spark
     command: >
       spark-submit
-      --master spark://spark-master:7077
+      --master "local[*]"
       --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0
       spark_processor.py
     environment:
@@ -123,13 +79,32 @@ services:
       - POSTGRES_DB=traffic_db
       - POSTGRES_USER=user
       - POSTGRES_PASSWORD=password
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
     volumes:
       - ./models:/app/models
     depends_on:
-      - spark-master
       - kafka
       - redis
       - db
+    restart: unless-stopped
+
+  # 7. Traffic Simulator (Producer) - Generates Kafka traffic_stream stream from test.csv
+  simulator:
+    build:
+      context: ./mini-services/simulator
+    ports:
+      - "8001:8001"
+    environment:
+      - KAFKA_HOST=kafka:29092
+      - CSV_PATH=data/test.csv
+      - STREAM_DELAY=1.0
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - kafka
+      - backend
+    restart: unless-stopped
 
 volumes:
   postgres_data:

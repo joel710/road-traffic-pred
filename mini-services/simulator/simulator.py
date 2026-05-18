@@ -2,15 +2,17 @@ import pandas as pd
 import json
 import time
 import os
+import asyncio
 from kafka import KafkaProducer
 from fastapi import FastAPI, BackgroundTasks
 import uvicorn
 
-app = FastAPI()
+app = FastAPI(title="Road Traffic Simulator - Kafka Broker Connected")
 
-KAFKA_HOST = os.getenv("KAFKA_HOST", "localhost:9092")
-TOPIC = "traffic_data"
-CSV_PATH = "data/test.csv"
+KAFKA_HOST = os.getenv("KAFKA_HOST", "kafka:29092")
+TOPIC = "traffic_stream"
+CSV_PATH = os.getenv("CSV_PATH", "data/test.csv")
+STREAM_DELAY = float(os.getenv("STREAM_DELAY", "1.0"))  # Seconds between each row
 
 class TrafficSimulator:
     def __init__(self):
@@ -18,48 +20,72 @@ class TrafficSimulator:
         self.is_running = False
 
     def connect_kafka(self):
-        retries = 5
+        retries = 10
         while retries > 0:
             try:
                 self.producer = KafkaProducer(
                     bootstrap_servers=[KAFKA_HOST],
                     value_serializer=lambda x: json.dumps(x).encode('utf-8')
                 )
-                print("Connected to Kafka")
+                print("✅ Connected to Kafka Broker successfully.")
                 return True
             except Exception as e:
-                print(f"Failed to connect to Kafka: {e}. Retrying...")
+                print(f"⚠️ Failed to connect to Kafka at {KAFKA_HOST}: {e}. Retrying in 5s...")
                 retries -= 1
                 time.sleep(5)
         return False
 
-    def run(self):
+    async def run(self):
         if not self.producer:
-            if not self.connect_kafka():
+            # Run blocking connection check in separate thread to avoid freezing FastAPI
+            loop = asyncio.get_event_loop()
+            connected = await loop.run_in_executor(None, self.connect_kafka)
+            if not connected:
+                print("❌ Critical: Could not connect to Kafka broker. Simulation aborted.")
+                self.is_running = False
                 return
 
         self.is_running = True
-        df = pd.read_csv(CSV_PATH)
+        print(f"🚀 Starting Kafka simulation. Reading {CSV_PATH}...")
+        
+        try:
+            df = pd.read_csv(CSV_PATH)
+        except Exception as e:
+            print(f"❌ Error: Could not read CSV file at {CSV_PATH}: {e}")
+            self.is_running = False
+            return
+
         # Sort by DateTime to simulate chronologically
         df['DateTime'] = pd.to_datetime(df['DateTime'])
         df = df.sort_values('DateTime')
 
-        print(f"Starting simulation with {len(df)} rows")
+        print(f"📈 Loaded {len(df)} rows. Publishing to Kafka topic '{TOPIC}' every {STREAM_DELAY}s...")
+        
         for _, row in df.iterrows():
             if not self.is_running:
+                print("🛑 Simulation stopped by user request.")
                 break
 
             data = row.to_dict()
+            # Format DateTime as string
             data['DateTime'] = data['DateTime'].strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Convert NaN to None for JSON compliance
+            for k, v in list(data.items()):
+                if pd.isna(v):
+                    data[k] = None
 
-            self.producer.send(TOPIC, value=data)
-            # print(f"Sent: {data}")
+            try:
+                # Send asynchronously to Kafka
+                self.producer.send(TOPIC, value=data)
+                print(f"✅ Published: DateTime={data['DateTime']}, Junction={data['Junction']}, Vehicles={data['Vehicles']}")
+            except Exception as e:
+                print(f"⚠️ Failed to send row to Kafka: {e}")
 
-            # Control frequency: 1 row per second
-            time.sleep(1)
+            await asyncio.sleep(STREAM_DELAY)
 
         self.is_running = False
-        print("Simulation finished")
+        print("🏁 Kafka Simulation loop terminated.")
 
 simulator = TrafficSimulator()
 

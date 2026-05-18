@@ -3,3 +3,4 @@ redis
 torch
 pandas
 numpy
+psycopg2-binary
