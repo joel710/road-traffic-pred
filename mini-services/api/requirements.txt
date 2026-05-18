@@ -1,7 +1,6 @@
 fastapi
 uvicorn
 redis
-psycopg2-binary
 asyncpg
 pydantic
 pydantic-settings
