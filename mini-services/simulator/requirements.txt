@@ -2,3 +2,5 @@ pandas
 fastapi
 uvicorn
 httpx
+kafka-python
+python-dotenv

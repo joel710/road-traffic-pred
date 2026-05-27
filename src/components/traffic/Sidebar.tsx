@@ -83,7 +83,7 @@ export default function Sidebar({
   const isClient = useIsClient();
 
   return (
-    <div className="absolute left-4 top-4 bottom-24 w-80 z-[1000] flex flex-col gap-4">
+    <div className="absolute left-4 top-4 bottom-24 w-80 z-50 flex flex-col gap-4">
       {/* Search Bar */}
       <div className="backdrop-blur-xl bg-white/80 rounded-2xl shadow-lg shadow-black/5 border border-white/50 p-3">
         <div className="relative">
@@ -189,9 +189,9 @@ export default function Sidebar({
               </div>
 
               {/* Sparkline */}
-              <div className="h-12 w-full min-h-[48px]">
+              <div className="h-12 w-full" style={{ minHeight: 0 }}>
                 {isClient && (
-                  <ResponsiveContainer width="100%" height="100%">
+                  <ResponsiveContainer width="100%" height={48}>
                     <AreaChart data={sparklineData}>
                       <defs>
                         <linearGradient id={`gradient-${junction.id}`} x1="0" y1="0" x2="0" y2="1">

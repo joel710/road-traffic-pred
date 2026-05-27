@@ -1,8 +1,6 @@
 fastapi
 uvicorn
-redis
-asyncpg
 pydantic
-pydantic-settings
 python-multipart
-httpx
+kafka-python
+python-dotenv

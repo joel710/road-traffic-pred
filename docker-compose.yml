@@ -1,69 +1,19 @@
 services:
-  # 1. Zookeeper (Lightweight JVM memory settings)
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.0
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-      KAFKA_JVM_PERFORMANCE_OPTS: "-Xmx128m -Xms128m"
-    restart: unless-stopped
-
-  # 2. Apache Kafka Broker (Aligned to topic, Lightweight JVM)
-  kafka:
-    image: confluentinc/cp-kafka:7.5.0
-    depends_on:
-      - zookeeper
-    ports:
-      - "9092:9092"
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_JVM_PERFORMANCE_OPTS: "-Xmx256m -Xms256m"
-    restart: unless-stopped
-
-  # 3. Database (PostgreSQL)
-  db:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_DB: traffic_db
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
-    restart: unless-stopped
-
-  # 4. Cache & Real-time Pub/Sub (Redis)
-  redis:
-    image: redis:alpine
-    ports:
-      - "6379:6379"
-    restart: unless-stopped
-
-  # 5. Backend Gateway API (FastAPI) - Highly lightweight, proxying Redis status & WebSockets
+  # ─── Backend Gateway API (FastAPI) ─────────────────────────────
+  # Consumes predictions from Aiven Kafka topic 'traffic_predictions'
+  # and broadcasts them to WebSocket clients (Next.js frontend).
   backend:
     build:
       context: ./mini-services/api
     ports:
       - "8000:8000"
-    environment:
-      - REDIS_HOST=redis
-      - POSTGRES_HOST=db
-      - POSTGRES_DB=traffic_db
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=password
-    depends_on:
-      - redis
-      - db
+    env_file:
+      - .env
     restart: unless-stopped
 
-  # 6. Spark Structured Streaming Job (Single container, local[*] mode, saves ~4 GB RAM)
+  # ─── Spark Structured Streaming ────────────────────────────────
+  # Reads from Aiven Kafka topic 'traffic_stream', runs LSTM inference,
+  # and writes predictions to Aiven Kafka topic 'traffic_predictions'.
   spark-processor:
     build:
       context: ./mini-services/spark
@@ -72,39 +22,30 @@ services:
       --master "local[*]"
       --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0
       spark_processor.py
+    env_file:
+      - .env
     environment:
-      - KAFKA_HOST=kafka:29092
-      - REDIS_HOST=redis
-      - POSTGRES_HOST=db
-      - POSTGRES_DB=traffic_db
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=password
       - SPARK_RPC_AUTHENTICATION_ENABLED=no
       - SPARK_RPC_ENCRYPTION_ENABLED=no
     volumes:
       - ./models:/app/models
-    depends_on:
-      - kafka
-      - redis
-      - db
+      - ./certs:/app/certs
     restart: unless-stopped
 
-  # 7. Traffic Simulator (Producer) - Generates Kafka traffic_stream stream from test.csv
+  # ─── Traffic Simulator ─────────────────────────────────────────
+  # Reads test.csv and publishes each row to Aiven Kafka topic 'traffic_stream'.
   simulator:
     build:
       context: ./mini-services/simulator
     ports:
       - "8001:8001"
+    env_file:
+      - .env
     environment:
-      - KAFKA_HOST=kafka:29092
       - CSV_PATH=data/test.csv
-      - STREAM_DELAY=1.0
     volumes:
       - ./data:/app/data
+      - ./certs:/app/certs
     depends_on:
-      - kafka
       - backend
     restart: unless-stopped
-
-volumes:
-  postgres_data:

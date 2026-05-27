@@ -1,194 +1,165 @@
 from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import redis
 import json
 import os
 import asyncio
-from typing import List, Optional
+from asyncio import Queue
+from pathlib import Path
+from threading import Thread
+from collections import deque, defaultdict
+from typing import Optional
 from datetime import datetime
-import asyncpg
+from kafka import KafkaConsumer
+from dotenv import load_dotenv
 
-app = FastAPI(title="Road Traffic Gateway API - Production Ready")
+load_dotenv()
 
-# Security: CORS configuration
-origins = [
-    "http://localhost:3000",  # Next.js Frontend
-    "http://127.0.0.1:3000",
-    "*"  # Dev fallback
-]
+app = FastAPI(title="Road Traffic Gateway API — Kafka-Native")
 
+# ─── CORS ────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Setup Redis connection
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
+# ─── Aiven Kafka Configuration ───────────────────────────────────
+KAFKA_HOST = os.getenv("KAFKA_HOST", "localhost")
+KAFKA_PORT = int(os.getenv("KAFKA_PORT", "9092"))
+KAFKA_USERNAME = os.getenv("KAFKA_USERNAME", "")
+KAFKA_PASSWORD = os.getenv("KAFKA_PASSWORD", "")
+KAFKA_SSL_CA = os.getenv("KAFKA_SSL_CA", "")
+TOPIC_OUTPUT = os.getenv("KAFKA_TOPIC_OUTPUT", "traffic_predictions")
+BOOTSTRAP_SERVER = f"{KAFKA_HOST}:{KAFKA_PORT}"
 
-# Setup PostgreSQL configuration
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
-POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", 5432))
-POSTGRES_DB = os.getenv("POSTGRES_DB", "traffic_db")
-POSTGRES_USER = os.getenv("POSTGRES_USER", "user")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "password")
+# ─── In-Memory State (replaces Redis & PostgreSQL) ───────────────
+current_state: dict[int, dict] = {}          # junction_id → latest prediction
+history: dict[int, deque] = defaultdict(     # junction_id → [prediction, …]
+    lambda: deque(maxlen=2000)
+)
 
-db_pool = None
+# ─── WebSocket Manager ───────────────────────────────────────────
+websocket_clients: set[WebSocket] = set()
+broadcast_queue: asyncio.Queue = Queue()
+
+
+def build_kafka_consumer() -> KafkaConsumer:
+    """KafkaConsumer with SASL_SSL (Aiven) or plaintext fallback."""
+    opts = {
+        "bootstrap_servers": [BOOTSTRAP_SERVER],
+        "group_id": "traffic-api-consumer",
+        "auto_offset_reset": "latest",
+        "value_deserializer": lambda v: json.loads(v.decode("utf-8")),
+    }
+    if KAFKA_USERNAME and KAFKA_PASSWORD:
+        opts.update(
+            security_protocol="SASL_SSL",
+            sasl_mechanism="PLAIN",
+            sasl_plain_username=KAFKA_USERNAME,
+            sasl_plain_password=KAFKA_PASSWORD,
+        )
+        if KAFKA_SSL_CA and Path(KAFKA_SSL_CA).exists():
+            opts["ssl_cafile"] = KAFKA_SSL_CA
+    return KafkaConsumer(TOPIC_OUTPUT, **opts)
+
+
+def kafka_listener():
+    """Background thread: read predictions from Kafka and push to the asyncio queue."""
+    loop = None
+    try:
+        consumer = build_kafka_consumer()
+        print(f"📡 Kafka consumer listening on '{TOPIC_OUTPUT}' …")
+        for msg in consumer:
+            data = msg.value
+            junction = data.get("Junction")
+            if junction is not None:
+                # Update in-memory state
+                current_state[junction] = data
+                history[junction].append(data)
+
+            # Push to asyncio broadcast queue
+            if loop is None:
+                loop = asyncio.new_event_loop()
+            asyncio.run_coroutine_threadsafe(
+                broadcast_queue.put(data),
+                loop,
+            )
+    except Exception as e:
+        print(f"❌ Kafka consumer error: {e}")
+
 
 @app.on_event("startup")
-async def startup_event():
-    global db_pool
-    # Connect to PostgreSQL pool
-    retries = 5
-    while retries > 0:
-        try:
-            db_pool = await asyncpg.create_pool(
-                host=POSTGRES_HOST,
-                port=POSTGRES_PORT,
-                database=POSTGRES_DB,
-                user=POSTGRES_USER,
-                password=POSTGRES_PASSWORD,
-                min_size=1,
-                max_size=10
-            )
-            print("✅ Connected to PostgreSQL pool")
-            break
-        except Exception as e:
-            print(f"⚠️ Failed to connect to PostgreSQL: {e}. Retrying in 3s...")
-            retries -= 1
-            await asyncio.sleep(3)
-            
-    if not db_pool:
-        print("❌ Critical: Could not connect to PostgreSQL. App will run in degraded mode (No history).")
+async def startup():
+    # Start Kafka listener in background thread
+    thread = Thread(target=kafka_listener, daemon=True)
+    thread.start()
+    print("✅ Kafka listener thread started")
+    # Start the broadcast worker
+    asyncio.create_task(broadcast_worker())
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    global db_pool
-    if db_pool:
-        await db_pool.close()
-        print("🔌 PostgreSQL pool closed")
 
+async def broadcast_worker():
+    """Continuously drain the broadcast queue and send to all WebSocket clients."""
+    while True:
+        data = await broadcast_queue.get()
+        dead_clients: list[WebSocket] = []
+        for ws in websocket_clients:
+            try:
+                await ws.send_json(data)
+            except Exception:
+                dead_clients.append(ws)
+        for ws in dead_clients:
+            websocket_clients.discard(ws)
+
+
+# ─── Models ──────────────────────────────────────────────────────
 class TrafficData(BaseModel):
     DateTime: str
     Junction: int
     Vehicles: Optional[int] = None
     ID: Optional[int] = None
 
+
+# ─── REST Endpoints ──────────────────────────────────────────────
 @app.get("/")
-def read_root():
+def root():
     return {
-        "status": "online", 
+        "status": "online",
         "service": "traffic-gateway-api",
-        "database_connected": db_pool is not None
+        "mode": "kafka-native (no Redis/PostgreSQL)",
+        "active_connections": len(websocket_clients),
     }
 
-@app.post("/traffic/ingest")
-async def ingest_traffic(data: TrafficData):
-    """
-    HTTP Ingest fallback endpoint. Pushes data directly into Redis Pub/Sub traffic_stream.
-    (Note: Simulator now publishes directly to Kafka, which Spark processes).
-    """
-    try:
-        payload = data.dict()
-        r.publish("traffic_stream", json.dumps(payload))
-        r.set(f"junction:{data.Junction}:last", json.dumps(payload))
-        return {"status": "success", "message": "Data ingested"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/traffic/current")
-def get_current_traffic():
-    """
-    Fetch the latest predictions generated by Spark Streaming from Redis.
-    """
-    keys = r.keys("junction:*:status")
-    if not keys:
-        # Fallback to last ingested raw data if Spark has not started yet
-        keys = r.keys("junction:*:last")
-        
-    traffic_data = []
-    for key in keys:
-        val = r.get(key)
-        if val:
-            traffic_data.append(json.loads(val))
-            
-    # Sort by junction number
-    traffic_data.sort(key=lambda x: x.get("Junction", 0))
-    return traffic_data
+def get_current():
+    """Return the latest prediction for every junction (from in-memory state)."""
+    return sorted(current_state.values(), key=lambda x: x.get("Junction", 0))
+
 
 @app.get("/traffic/history/{junction_id}")
-async def get_traffic_history(junction_id: int, limit: int = 50):
-    """
-    Fetch the historical prediction logs (generated by Spark Streaming) from PostgreSQL.
-    """
-    if not db_pool:
-        # High fidelity mock fallback if database is disconnected
-        print("⚠️ Database disconnected. Returning mock history.")
-        now = datetime.now()
-        mock_history = []
-        for i in range(limit):
-            dt = datetime.fromtimestamp(now.timestamp() - i * 3600)
-            mock_history.append({
-                "timestamp": dt.strftime("%Y-%m-%d %H:%M:%S"),
-                "junction_id": junction_id,
-                "actual_vehicles": int(20 + (i % 7) * 5 + (i % 3) * 2),
-                "predicted_vehicles": float(18 + (i % 7) * 5 + (i % 3) * 2.2)
-            })
-        return mock_history
+def get_history(junction_id: int, limit: int = 50):
+    """Return recent prediction history for a junction (from in-memory deque)."""
+    junction_history = list(history.get(junction_id, []))
+    return junction_history[-limit:]
 
-    try:
-        records = await db_pool.fetch(
-            """
-            SELECT timestamp, junction_id, actual_vehicles, predicted_vehicles
-            FROM predictions
-            WHERE junction_id = $1
-            ORDER BY timestamp DESC
-            LIMIT $2
-            """,
-            junction_id,
-            limit
-        )
-        
-        history = []
-        for rec in records:
-            history.append({
-                "timestamp": rec["timestamp"].strftime("%Y-%m-%d %H:%M:%S"),
-                "junction_id": rec["junction_id"],
-                "actual_vehicles": rec["actual_vehicles"],
-                "predicted_vehicles": rec["predicted_vehicles"]
-            })
-            
-        history.reverse()
-        return history
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
+# ─── WebSocket Endpoint ──────────────────────────────────────────
 @app.websocket("/ws/traffic")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    pubsub = r.pubsub()
-    # Subscribe to raw input streams and Spark prediction updates
-    pubsub.subscribe("traffic_updates")
-    pubsub.subscribe("traffic_stream")
-    
-    print("🔌 Client connected to WebSocket /ws/traffic")
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    websocket_clients.add(ws)
+    print(f"🔌 WebSocket client connected ({len(websocket_clients)} total)")
+
     try:
         while True:
-            # Responsive non-blocking message loop
-            message = pubsub.get_message(ignore_subscribe_message=True)
-            if message:
-                await websocket.send_text(message['data'])
-            await asyncio.sleep(0.05)
-    except Exception as e:
-        print(f"🔌 WebSocket Disconnected: {e}")
+            # Keep the connection alive; client pings will reset the timeout
+            await ws.receive_text()
+    except Exception:
+        pass
     finally:
-        try:
-            pubsub.unsubscribe()
-        except:
-            pass
-        await websocket.close()
+        websocket_clients.discard(ws)
+        print(f"🔌 WebSocket client disconnected ({len(websocket_clients)} remaining)")

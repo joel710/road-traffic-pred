@@ -49,7 +49,7 @@ export default function TimeSlider({ currentTime, onTimeChange }: TimeSliderProp
   };
 
   return (
-    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] w-full max-w-2xl px-4">
+    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4">
       <div className="backdrop-blur-xl bg-white/80 rounded-2xl shadow-lg shadow-black/5 border border-white/50 p-4">
         {/* Header */}
         <div className="flex items-center justify-between mb-3">
@@ -66,7 +66,7 @@ export default function TimeSlider({ currentTime, onTimeChange }: TimeSliderProp
             >
               <ChevronLeft className="w-4 h-4 text-gray-500" />
             </button>
-            <span className="text-sm font-semibold text-gray-900 min-w-[60px] text-center">
+            <span className="text-sm font-semibold text-gray-900 min-w-15 text-center">
               {formatTime(displayTime)}
             </span>
             <button

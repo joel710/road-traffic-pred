@@ -1,6 +1,5 @@
 pyspark
-redis
 torch
 pandas
 numpy
-psycopg2-binary
+kafka-python

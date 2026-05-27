@@ -1,13 +1,13 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import Sidebar from '@/components/traffic/Sidebar';
 import ParadigmSwitcher from '@/components/traffic/ParadigmSwitcher';
 import TimeSlider from '@/components/traffic/TimeSlider';
 import { Junction, RouteSegment, ModelMetrics } from '@/types/traffic';
 
-// Dynamically import the map component to avoid SSR issues with Leaflet
+// Dynamically import the map component to avoid SSR issues with MapLibre
 const TrafficMap = dynamic(() => import('@/components/traffic/TrafficMap'), {
   ssr: false,
   loading: () => (
@@ -20,146 +20,171 @@ const TrafficMap = dynamic(() => import('@/components/traffic/TrafficMap'), {
   ),
 });
 
-// Initial junction data (Paris traffic simulation)
-const initialJunctions: Junction[] = [
-  {
-    id: 'J1',
-    name: 'J1 - Périph Nord',
-    lat: 48.8866,
-    lng: 2.3522,
-    currentFlow: 3420,
-    predictedFlow: 3580,
-    trend: 'up',
-    status: 'moderate',
-  },
-  {
-    id: 'J2',
-    name: 'J2 - Champs-Élysées',
-    lat: 48.8696,
-    lng: 2.3076,
-    currentFlow: 2840,
-    predictedFlow: 2650,
-    trend: 'down',
-    status: 'fluid',
-  },
-  {
-    id: 'J3',
-    name: 'J3 - Place d\'Italie',
-    lat: 48.8266,
-    lng: 2.3552,
-    currentFlow: 4120,
-    predictedFlow: 4450,
-    trend: 'up',
-    status: 'congested',
-  },
-  {
-    id: 'J4',
-    name: 'J4 - Bastille',
-    lat: 48.8536,
-    lng: 2.3792,
-    currentFlow: 2680,
-    predictedFlow: 2720,
-    trend: 'stable',
-    status: 'fluid',
-  },
-];
+// ─── Junction Metadata (positions + names, static) ──────────────
+const JUNCTION_META: Record<string, { name: string; lat: number; lng: number }> = {
+  J1: { name: 'J1 - Périph Nord', lat: 48.8866, lng: 2.3522 },
+  J2: { name: 'J2 - Champs-Élysées', lat: 48.8696, lng: 2.3076 },
+  J3: { name: "J3 - Place d'Italie", lat: 48.8266, lng: 2.3552 },
+  J4: { name: 'J4 - Bastille', lat: 48.8536, lng: 2.3792 },
+};
 
-// Initial route segments
-const initialRoutes: RouteSegment[] = [
-  { from: 'J1', to: 'J2', flow: 2800, status: 'fluid' },
-  { from: 'J2', to: 'J4', flow: 3100, status: 'moderate' },
-  { from: 'J1', to: 'J4', flow: 4200, status: 'congested' },
-  { from: 'J3', to: 'J4', flow: 2500, status: 'fluid' },
-  { from: 'J1', to: 'J3', flow: 3600, status: 'moderate' },
-  { from: 'J2', to: 'J3', flow: 2900, status: 'fluid' },
+// ─── Route definitions (from→to) ───────────────────────────────
+const ROUTE_DEFS: { from: string; to: string }[] = [
+  { from: 'J1', to: 'J2' },
+  { from: 'J2', to: 'J4' },
+  { from: 'J1', to: 'J4' },
+  { from: 'J3', to: 'J4' },
+  { from: 'J1', to: 'J3' },
+  { from: 'J2', to: 'J3' },
 ];
 
 // Model metrics for different paradigms
-const globalMetrics: ModelMetrics = {
-  mae: 3.24,
-  rmse: 4.15,
-  accuracy: 87.5,
-};
+const globalMetrics: ModelMetrics = { mae: 3.24, rmse: 4.15, accuracy: 87.5 };
+const specificMetrics: ModelMetrics = { mae: 2.17, rmse: 3.08, accuracy: 91.2 };
 
-const specificMetrics: ModelMetrics = {
-  mae: 2.17, // As mentioned in the requirements
-  rmse: 3.08,
-  accuracy: 91.2,
-};
+// Helpers
+const calcStatus = (v: number): 'fluid' | 'moderate' | 'congested' =>
+  v > 3500 ? 'congested' : v > 2800 ? 'moderate' : 'fluid';
 
-// Helper function to calculate status based on flow
-const calculateStatus = (flow: number): 'fluid' | 'moderate' | 'congested' => {
-  if (flow > 3500) return 'congested';
-  if (flow > 2800) return 'moderate';
-  return 'fluid';
-};
+const calcTrend = (pred: number, cur: number): 'up' | 'down' | 'stable' =>
+  pred > cur ? 'up' : pred < cur ? 'down' : 'stable';
 
-// Helper function to calculate trend
-const calculateTrend = (predicted: number, current: number): 'up' | 'down' | 'stable' => {
-  if (predicted > current) return 'up';
-  if (predicted < current) return 'down';
-  return 'stable';
+// ─── Initial junctions with sensible defaults ───────────────────
+const buildInitialJunctions = (): Junction[] =>
+  Object.entries(JUNCTION_META).map(([id, meta]) => ({
+    id,
+    name: meta.name,
+    lat: meta.lat,
+    lng: meta.lng,
+    currentFlow: 0,
+    predictedFlow: 0,
+    trend: 'stable',
+    status: 'fluid',
+  }));
+
+const buildInitialRoutes = (): RouteSegment[] =>
+  ROUTE_DEFS.map((r) => ({ from: r.from, to: r.to, flow: 0, status: 'fluid' }));
+
+type WsPayload = {
+  Junction: number;
+  Vehicles: number;
+  PredictedVehicles: number;
+  Status: string;
+  DateTime: string;
 };
 
 export default function Home() {
-  const [baseJunctions, setBaseJunctions] = useState<Junction[]>(initialJunctions);
-  const [baseRoutes, setBaseRoutes] = useState<RouteSegment[]>(initialRoutes);
+  const [junctions, setJunctions] = useState<Junction[]>(buildInitialJunctions);
+  const [routes, setRoutes] = useState<RouteSegment[]>(buildInitialRoutes);
   const [selectedJunction, setSelectedJunction] = useState<string | null>(null);
   const [modelType, setModelType] = useState<'global' | 'specific'>('global');
   const [currentTime, setCurrentTime] = useState(0);
+  const [wsConnected, setWsConnected] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
 
-  // Derived model metrics based on modelType
-  const modelMetrics = useMemo(() => {
-    return modelType === 'global' ? globalMetrics : specificMetrics;
-  }, [modelType]);
+  const modelMetrics = useMemo(() => (modelType === 'global' ? globalMetrics : specificMetrics), [modelType]);
 
-  // Simulate real-time data updates with timer
+  // ─── WebSocket: connect to FastAPI backend ──────────────────
   useEffect(() => {
-    const interval = setInterval(() => {
-      setBaseJunctions(prev => prev.map(junction => ({
-        ...junction,
-        currentFlow: junction.currentFlow + Math.round((Math.random() - 0.5) * 50),
-        predictedFlow: junction.predictedFlow + Math.round((Math.random() - 0.5) * 30),
-      })));
-    }, 5000);
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//localhost:8000/ws/traffic`;
 
-    return () => clearInterval(interval);
+    const connect = () => {
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log('✅ WebSocket connected to', wsUrl);
+        setWsConnected(true);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data: WsPayload = JSON.parse(event.data);
+          if (data.Junction == null) return;
+
+          const junctionId = `J${data.Junction}`;
+
+          // Update junctions
+          setJunctions((prev) =>
+            prev.map((j) => {
+              if (j.id !== junctionId) return j;
+              const newFlow = data.Vehicles ?? j.currentFlow;
+              const predFlow = data.PredictedVehicles ?? j.predictedFlow;
+              return {
+                ...j,
+                currentFlow: newFlow,
+                predictedFlow: predFlow,
+                status: calcStatus(predFlow),
+                trend: calcTrend(predFlow, newFlow),
+              };
+            }),
+          );
+
+          // Update routes — average flow of the two connected junctions
+          setRoutes((prev) =>
+            prev.map((route) => {
+              const fromJ = data.Junction === parseInt(junctionId.replace('J', '')) ? junctionId : null;
+              if (!fromJ && route.from !== junctionId && route.to !== junctionId) return route;
+              const jFrom = junctions.find((j) => j.id === route.from);
+              const jTo = junctions.find((j) => j.id === route.to);
+              const avgFlow = Math.round(((jFrom?.currentFlow ?? 0) + (jTo?.currentFlow ?? 0)) / 2);
+              return { ...route, flow: avgFlow, status: calcStatus(avgFlow) };
+            }),
+          );
+        } catch (e) {
+          // ignore malformed messages
+        }
+      };
+
+      ws.onclose = () => {
+        console.log('🔌 WebSocket disconnected, reconnecting in 5s…');
+        setWsConnected(false);
+        wsRef.current = null;
+        setTimeout(connect, 5000);
+      };
+
+      ws.onerror = () => ws.close();
+    };
+
+    connect();
+    return () => wsRef.current?.close();
   }, []);
 
-  // Derived junctions with time-based predictions
-  const junctions = useMemo(() => {
-    const hourFactor = Math.sin(currentTime / 24 * Math.PI * 2);
-    const rushHourFactor = (currentTime >= 7 && currentTime <= 9) || (currentTime >= 17 && currentTime <= 19) ? 1.3 : 1;
-    const nightFactor = currentTime >= 0 && currentTime <= 5 ? 0.5 : 1;
+  // ─── Initial data fetch (REST fallback) ─────────────────────
+  useEffect(() => {
+    fetch('http://localhost:8000/traffic/current')
+      .then((r) => r.json())
+      .then((data: WsPayload[]) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setJunctions((prev) =>
+            prev.map((j) => {
+              const match = data.find((d) => `J${d.Junction}` === j.id);
+              if (!match) return j;
+              const flow = match.Vehicles ?? j.currentFlow;
+              const pred = match.PredictedVehicles ?? j.predictedFlow;
+              return { ...j, currentFlow: flow, predictedFlow: pred, status: calcStatus(pred), trend: calcTrend(pred, flow) };
+            }),
+          );
+        }
+      })
+      .catch(() => { /* API not available yet, use defaults */ });
+  }, []);
 
-    return baseJunctions.map(junction => {
-      const predictedFlow = Math.round(junction.currentFlow * rushHourFactor * nightFactor * (1 + hourFactor * 0.2));
-      
-      return {
-        ...junction,
-        predictedFlow,
-        status: calculateStatus(predictedFlow),
-        trend: calculateTrend(predictedFlow, junction.currentFlow),
-      };
-    });
-  }, [baseJunctions, currentTime]);
-
-  // Derived routes with time-based predictions
-  const routes = useMemo(() => {
-    const hourFactor = Math.sin(currentTime / 24 * Math.PI * 2);
-    
-    return baseRoutes.map(route => {
-      const predictedFlow = route.flow * (1 + hourFactor * 0.15);
-      return { 
-        ...route, 
-        flow: Math.round(predictedFlow), 
-        status: calculateStatus(predictedFlow) 
-      };
-    });
-  }, [baseRoutes, currentTime]);
+  // ─── Recalculate routes whenever junctions change ───────────
+  useEffect(() => {
+    setRoutes((prev) =>
+      prev.map((route) => {
+        const jFrom = junctions.find((j) => j.id === route.from);
+        const jTo = junctions.find((j) => j.id === route.to);
+        const avg = Math.round(((jFrom?.currentFlow ?? 0) + (jTo?.currentFlow ?? 0)) / 2);
+        return { ...route, flow: avg, status: calcStatus(avg) };
+      }),
+    );
+  }, [junctions]);
 
   const handleJunctionSelect = useCallback((id: string) => {
-    setSelectedJunction(prev => prev === id ? null : id);
+    setSelectedJunction((prev) => (prev === id ? null : id));
   }, []);
 
   const handleModelChange = useCallback((type: 'global' | 'specific') => {
@@ -204,10 +229,15 @@ export default function Home() {
       />
 
       {/* Logo/Brand */}
-      <div className="absolute top-4 right-4 z-[1000]">
+      <div className="absolute top-4 right-4 z-50">
         <div className="backdrop-blur-xl bg-white/80 rounded-2xl shadow-lg shadow-black/5 border border-white/50 px-4 py-3">
-          <h1 className="text-sm font-semibold text-gray-900">Traffic Prediction</h1>
-          <p className="text-[10px] text-gray-500">LSTM Neural Network</p>
+          <div className="flex items-center gap-2.5">
+            <div className="flex flex-col">
+              <h1 className="text-sm font-semibold text-gray-900">Traffic Prediction</h1>
+              <p className="text-[10px] text-gray-500">LSTM Neural Network</p>
+            </div>
+            <div className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]' : 'bg-amber-500 animate-pulse'}`} title={wsConnected ? 'Connected' : 'Connecting…'} />
+          </div>
         </div>
       </div>
     </main>
