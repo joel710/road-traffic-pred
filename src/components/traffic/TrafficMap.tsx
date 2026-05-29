@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
-import Map, { Source, Layer, Marker, Popup, MapRef, useMap } from 'react-map-gl/maplibre';
+import Map, { Source, Layer, Marker, Popup, MapRef } from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Junction, RouteSegment } from '@/types/traffic';
 import { roadGeometries } from '@/lib/data/roadGeometries';
@@ -28,50 +28,11 @@ const COLORS = {
   congested: '#EA580C',
 } as const;
 
-/** Soft glow color per status */
-const GLOW_COLORS = {
-  fluid: 'rgba(16, 185, 129, 0.25)',
-  moderate: 'rgba(245, 158, 11, 0.25)',
-  congested: 'rgba(234, 88, 12, 0.30)',
-} as const;
-
 export default function TrafficMap({ junctions, routes, selectedJunction, onJunctionSelect }: TrafficMapProps) {
   const mapRef = useRef<MapRef>(null);
   const [popupInfo, setPopupInfo] = useState<Junction | null>(null);
   const [mapStyle, setMapStyle] = useState<MapStyle>('dark');
   const [styleLoaded, setStyleLoaded] = useState(false);
-  const dashOffsetRef = useRef(0);
-
-  // ─── Animated dash offset for flow lines ────────────────────
-  useEffect(() => {
-    const interval = setInterval(() => {
-      dashOffsetRef.current -= 1;
-      const map = mapRef.current?.getMap();
-      if (map && map.getLayer('route-flow')) {
-        map.setPaintProperty('route-flow', 'line-dasharray', [3, 6]);
-        try {
-          map.setPaintProperty('route-flow', 'line-dasharray', [3, 6]);
-        } catch { /* layer not ready */ }
-      }
-    }, 100);
-    return () => clearInterval(interval);
-  }, []);
-
-  // ─── 3D Terrain — re-apply after style toggle ────────────────
-  useEffect(() => {
-    const map = mapRef.current?.getMap();
-    if (!map || !styleLoaded) return;
-    // The <Source> JSX adds the source; we just need to enable terrain
-    const enable = () => {
-      try {
-        if (map.getSource('terrain-dem') && !map.getTerrain()) {
-          map.setTerrain({ source: 'terrain-dem', exaggeration: 1.2 });
-        }
-      } catch { /* source not ready yet */ }
-    };
-    // Delay slightly to let the source register after style swap
-    setTimeout(enable, 500);
-  }, [styleLoaded, mapStyle]);
 
   // ─── Routes → Real GeoJSON ──────────────────────────────────
   const routesGeoJSON = useMemo(() => ({
@@ -83,29 +44,32 @@ export default function TrafficMap({ junctions, routes, selectedJunction, onJunc
         [junctions.find((j) => j.id === route.to)?.lng ?? 0, junctions.find((j) => j.id === route.to)?.lat ?? 0],
       ];
       return {
-        type: 'Feature',
+        type: 'Feature' as const,
         properties: { status: route.status, color: COLORS[route.status], flow: route.flow },
-        geometry: { type: 'LineString', coordinates: coords },
+        geometry: { type: 'LineString' as const, coordinates: coords },
       };
     }),
   }), [routes, junctions]);
 
-  // ─── Camera transitions ─────────────────────────────────────
+  // ─── Camera transitions with smooth 3D perspective ──────────
   useEffect(() => {
-    if (selectedJunction && mapRef.current) {
+    if (!mapRef.current) return;
+    if (selectedJunction) {
       const j = junctions.find((j) => j.id === selectedJunction);
       if (j) {
+        // Unique rotation per junction for varied perspectives
+        const bearings: Record<string, number> = { J1: -30, J2: 25, J3: 40, J4: -15 };
         mapRef.current.flyTo({
           center: [j.lng, j.lat],
           zoom: 15.5,
-          pitch: 55,
-          bearing: -20,
-          duration: 2800,
+          pitch: 58,
+          bearing: bearings[j.id] ?? -20,
+          duration: 2600,
           essential: true,
         });
         setPopupInfo(j);
       }
-    } else if (mapRef.current) {
+    } else {
       mapRef.current.flyTo({
         center: [2.3522, 48.8566],
         zoom: 12.5,
@@ -132,7 +96,6 @@ export default function TrafficMap({ junctions, routes, selectedJunction, onJunc
     onJunctionSelect('');
   }, [onJunctionSelect]);
 
-  const textColor = mapStyle === 'dark' ? 'text-white' : 'text-gray-900';
   const panelBg = mapStyle === 'dark'
     ? 'bg-black/40 backdrop-blur-xl border-white/10'
     : 'bg-white/85 backdrop-blur-xl border-gray-200/60 shadow-lg shadow-black/5';
@@ -153,20 +116,8 @@ export default function TrafficMap({ junctions, routes, selectedJunction, onJunc
         style={{ width: '100%', height: '100%' }}
         mapStyle={MAP_STYLES[mapStyle]}
         onLoad={() => setStyleLoaded(true)}
-        terrain={{ source: 'terrain-dem', exaggeration: 1.2 }}
         maxPitch={85}
       >
-        {/* 3D Terrain Source — AWS Open Data Terrain Tiles */}
-        <Source
-          id="terrain-dem"
-          type="raster-dem"
-          tiles={[
-            'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
-          ]}
-          encoding="terrarium"
-          tileSize={256}
-          maxzoom={14}
-        />
 
         {/* ── Road Layers ───────────────────────────────────── */}
         <Source id="traffic-routes" type="geojson" data={routesGeoJSON}>
@@ -305,10 +256,10 @@ export default function TrafficMap({ junctions, routes, selectedJunction, onJunc
                   </div>
                   <div
                     className={`text-[10px] font-semibold mt-1.5 px-1.5 py-0.5 rounded-full inline-block ${popupInfo.status === 'congested'
-                        ? 'bg-orange-500/20 text-orange-500'
-                        : popupInfo.status === 'moderate'
-                          ? 'bg-amber-500/20 text-amber-500'
-                          : 'bg-emerald-500/20 text-emerald-500'
+                      ? 'bg-orange-500/20 text-orange-500'
+                      : popupInfo.status === 'moderate'
+                        ? 'bg-amber-500/20 text-amber-500'
+                        : 'bg-emerald-500/20 text-emerald-500'
                       }`}
                   >
                     {popupInfo.status.toUpperCase()}
