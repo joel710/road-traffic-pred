@@ -2,18 +2,18 @@
 
 import { useSyncExternalStore } from 'react';
 import { Junction, FlowPrediction, ModelMetrics } from '@/types/traffic';
-import { 
-  Search, 
-  TrendingUp, 
-  TrendingDown, 
+import {
+  Search,
+  TrendingUp,
+  TrendingDown,
   Minus,
   Activity,
   Clock,
   Target
 } from 'lucide-react';
-import { 
-  AreaChart, 
-  Area, 
+import {
+  AreaChart,
+  Area,
   ResponsiveContainer,
   YAxis,
   Tooltip
@@ -30,7 +30,7 @@ interface SidebarProps {
 // Hook to safely detect client-side mounting
 function useIsClient() {
   return useSyncExternalStore(
-    () => () => {},
+    () => () => { },
     () => true,
     () => false
   );
@@ -73,9 +73,9 @@ const getTrendIcon = (trend: 'up' | 'down' | 'stable') => {
   }
 };
 
-export default function Sidebar({ 
-  junctions, 
-  selectedJunction, 
+export default function Sidebar({
+  junctions,
+  selectedJunction,
   onJunctionSelect,
   modelMetrics,
   modelType
@@ -102,15 +102,14 @@ export default function Sidebar({
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
             Model Performance
           </h3>
-          <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
-            modelType === 'global' 
-              ? 'bg-blue-50 text-blue-600' 
-              : 'bg-emerald-50 text-emerald-600'
-          }`}>
+          <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${modelType === 'global'
+            ? 'bg-blue-50 text-blue-600'
+            : 'bg-emerald-50 text-emerald-600'
+            }`}>
             {modelType === 'global' ? 'Global Model' : 'Specific Model'}
           </span>
         </div>
-        
+
         <div className="grid grid-cols-3 gap-3">
           <div className="text-center">
             <div className="flex items-center justify-center gap-1 mb-1">
@@ -141,24 +140,23 @@ export default function Sidebar({
         {junctions.map((junction) => {
           const sparklineData = generateSparklineData(junction.currentFlow);
           const isSelected = selectedJunction === junction.id;
-          
+
           return (
             <div
               key={junction.id}
               onClick={() => onJunctionSelect(junction.id)}
               className={`backdrop-blur-xl rounded-2xl shadow-lg shadow-black/5 border transition-all cursor-pointer
-                ${isSelected 
-                  ? 'bg-white/90 border-gray-200/50 ring-2 ring-gray-300/50' 
+                ${isSelected
+                  ? 'bg-white/90 border-gray-200/50 ring-2 ring-gray-300/50'
                   : 'bg-white/80 border-white/50 hover:bg-white/90'
                 } p-4`}
             >
               {/* Junction Header */}
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <div className={`w-2 h-2 rounded-full ${
-                    junction.status === 'fluid' ? 'bg-emerald-500' :
+                  <div className={`w-2 h-2 rounded-full ${junction.status === 'fluid' ? 'bg-emerald-500' :
                     junction.status === 'moderate' ? 'bg-amber-500' : 'bg-orange-500'
-                  }`} />
+                    }`} />
                   <h4 className="font-semibold text-sm text-gray-900">{junction.name}</h4>
                 </div>
                 {getTrendIcon(junction.trend)}
@@ -197,18 +195,18 @@ export default function Sidebar({
                         <linearGradient id={`gradient-${junction.id}`} x1="0" y1="0" x2="0" y2="1">
                           <stop offset="0%" stopColor={
                             junction.status === 'fluid' ? '#10B981' :
-                            junction.status === 'moderate' ? '#F59E0B' : '#EA580C'
+                              junction.status === 'moderate' ? '#F59E0B' : '#EA580C'
                           } stopOpacity={0.3} />
                           <stop offset="100%" stopColor={
                             junction.status === 'fluid' ? '#10B981' :
-                            junction.status === 'moderate' ? '#F59E0B' : '#EA580C'
+                              junction.status === 'moderate' ? '#F59E0B' : '#EA580C'
                           } stopOpacity={0} />
                         </linearGradient>
                       </defs>
                       <YAxis hide domain={['dataMin - 20', 'dataMax + 20']} />
-                      <Tooltip 
-                        contentStyle={{ 
-                          display: 'none' 
+                      <Tooltip
+                        contentStyle={{
+                          display: 'none'
                         }}
                       />
                       <Area
@@ -216,7 +214,7 @@ export default function Sidebar({
                         dataKey="value"
                         stroke={
                           junction.status === 'fluid' ? '#10B981' :
-                          junction.status === 'moderate' ? '#F59E0B' : '#EA580C'
+                            junction.status === 'moderate' ? '#F59E0B' : '#EA580C'
                         }
                         strokeWidth={1.5}
                         fill={`url(#gradient-${junction.id})`}
@@ -231,7 +229,7 @@ export default function Sidebar({
       </div>
 
       {/* Custom Scrollbar Styles */}
-      <style jsx>{`
+      <style>{`
         .custom-scrollbar::-webkit-scrollbar {
           width: 4px;
         }
