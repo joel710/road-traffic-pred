@@ -536,6 +536,15 @@ SPARK_HOME=/home/jojo/tools/spark
 
 ### 7.5 Running
 
+#### Option A: Docker (one command)
+
+```bash
+./docker-up.sh          # Frontend + API
+./docker-up.sh --full   # Full stack: Frontend + API + Spark + Simulator
+```
+
+#### Option B: Manual
+
 **Terminal 1 — Backend services:**
 ```bash
 cd /home/jojo/road-traffic-pred
