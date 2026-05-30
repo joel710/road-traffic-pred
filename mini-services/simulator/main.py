@@ -1,17 +1,48 @@
 import pandas as pd
-import httpx
-import asyncio
 import os
 import json
-from datetime import datetime
+import time
+from pathlib import Path
+from kafka import KafkaProducer
+from dotenv import load_dotenv
 
-# Configuration
-API_URL = os.getenv("API_URL", "http://localhost:8000/traffic/ingest")
-DATA_PATH = "data/test.csv"
-STREAM_DELAY = float(os.getenv("STREAM_DELAY", "1.0")) # secondes entre chaque ligne
+load_dotenv()
 
-async def run_simulation():
-    print(f"🚀 Simulation démarrée. Lecture de {DATA_PATH}...")
+# ─── Configuration ────────────────────────────────────────────────
+KAFKA_HOST = os.getenv("KAFKA_HOST", "localhost")
+KAFKA_PORT = int(os.getenv("KAFKA_PORT", "9092"))
+KAFKA_USERNAME = os.getenv("KAFKA_USERNAME", "")
+KAFKA_PASSWORD = os.getenv("KAFKA_PASSWORD", "")
+KAFKA_SSL_CA = os.getenv("KAFKA_SSL_CA", "")
+KAFKA_TOPIC_INPUT = os.getenv("KAFKA_TOPIC_INPUT", "flux_data")
+DATA_PATH = os.getenv("CSV_PATH", "../data/test.csv")
+STREAM_DELAY = float(os.getenv("STREAM_DELAY", "1.0"))
+BOOTSTRAP_SERVER = f"{KAFKA_HOST}:{KAFKA_PORT}"
+
+
+def build_kafka_producer() -> KafkaProducer:
+    """KafkaProducer with SASL_SSL (Aiven) or plaintext fallback."""
+    opts = {
+        "bootstrap_servers": [BOOTSTRAP_SERVER],
+        "value_serializer": lambda x: json.dumps(x).encode("utf-8"),
+        "acks": "all",
+        "retries": 5,
+    }
+    if KAFKA_USERNAME and KAFKA_PASSWORD:
+        opts.update(
+            security_protocol="SASL_SSL",
+            sasl_mechanism="PLAIN",
+            sasl_plain_username=KAFKA_USERNAME,
+            sasl_plain_password=KAFKA_PASSWORD,
+        )
+        if KAFKA_SSL_CA and Path(KAFKA_SSL_CA).exists():
+            opts["ssl_cafile"] = KAFKA_SSL_CA
+    return KafkaProducer(**opts)
+
+
+def run_simulation():
+    print(f"🚀 Simulation Kafka démarrée. Lecture de {DATA_PATH}...")
+    print(f"📡 Connexion à Kafka: {BOOTSTRAP_SERVER}")
     
     try:
         df = pd.read_csv(DATA_PATH)
@@ -19,23 +50,35 @@ async def run_simulation():
         print(f"❌ Erreur : {DATA_PATH} introuvable.")
         return
 
-    async with httpx.AsyncClient() as client:
-        for index, row in df.iterrows():
-            payload = row.to_dict()
-            # On s'assure que DateTime est au format string
-            if 'DateTime' in payload:
-                payload['DateTime'] = str(payload['DateTime'])
-            
-            try:
-                response = await client.post(API_URL, json=payload)
-                if response.status_code == 200:
-                    print(f"✅ [T={payload['DateTime']}] Jonction {payload['Junction']} envoyée.")
-                else:
-                    print(f"⚠️ Erreur API ({response.status_code}): {response.text}")
-            except Exception as e:
-                print(f"❌ Erreur de connexion : {e}")
-            
-            await asyncio.sleep(STREAM_DELAY)
+    try:
+        producer = build_kafka_producer()
+        print(f"✅ Connecté à Kafka. Envoi vers topic '{KAFKA_TOPIC_INPUT}'...")
+    except Exception as e:
+        print(f"❌ Erreur de connexion Kafka : {e}")
+        return
+
+    for index, row in df.iterrows():
+        payload = row.to_dict()
+        # Conversion des types
+        if 'DateTime' in payload:
+            payload['DateTime'] = str(payload['DateTime'])
+        if 'Junction' in payload:
+            payload['Junction'] = int(payload['Junction'])
+        
+        try:
+            producer.send(KAFKA_TOPIC_INPUT, value=payload)
+            junction = payload.get('Junction', '?')
+            vehicles = payload.get('Vehicles', '?')
+            print(f"✅ [T={index+1}/{len(df)}] Junction {junction}: {vehicles} vehicles")
+        except Exception as e:
+            print(f"⚠️ Erreur d'envoi Kafka : {e}")
+        
+        time.sleep(STREAM_DELAY)
+
+    producer.flush()
+    producer.close()
+    print("✅ Simulation terminée !")
+
 
 if __name__ == "__main__":
-    asyncio.run(run_simulation())
+    run_simulation()

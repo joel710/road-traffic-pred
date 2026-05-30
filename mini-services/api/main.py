@@ -147,6 +147,28 @@ def get_history(junction_id: int, limit: int = 50):
     return junction_history[-limit:]
 
 
+# ─── POST Ingestion (from Simulator) ────────────────────────────
+@app.post("/traffic/ingest")
+async def ingest_traffic(data: TrafficData):
+    """Receive traffic data from the simulator."""
+    payload = data.model_dump()
+    # Optionally: update in-memory state immediately
+    if data.Junction is not None:
+        current_state[data.Junction] = payload
+        history[data.Junction].append(payload)
+    return {"status": "received", "junction": data.Junction}
+
+
+@app.get("/health")
+def health():
+    """Health check endpoint."""
+    return {
+        "status": "healthy",
+        "websocket_connections": len(websocket_clients),
+        "junctions_tracked": len(current_state),
+    }
+
+
 # ─── WebSocket Endpoint ──────────────────────────────────────────
 @app.websocket("/ws/traffic")
 async def websocket_endpoint(ws: WebSocket):
