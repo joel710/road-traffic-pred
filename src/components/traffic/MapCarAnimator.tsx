@@ -13,7 +13,7 @@ interface CarAnimatorProps {
   mapRef: React.RefObject<MapRef | null>;
 }
 
-const CAR_SPEED = 0.00012; // lng/lat units per frame (~60fps)
+const CAR_SPEED = 0.00012;
 
 function interpolate(a: [number, number], b: [number, number], t: number): [number, number] {
   return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
@@ -22,6 +22,13 @@ function interpolate(a: [number, number], b: [number, number], t: number): [numb
 function distance(a: [number, number], b: [number, number]): number {
   const dx = b[0] - a[0], dy = b[1] - a[1];
   return Math.sqrt(dx * dx + dy * dy);
+}
+
+function angleDiff(a: number, b: number): number {
+  let d = b - a;
+  while (d > 180) d -= 360;
+  while (d < -180) d += 360;
+  return d;
 }
 
 function getDirection(from: [number, number], to: [number, number]): number {
@@ -41,6 +48,7 @@ export default function MapCarAnimator({ carRoute, routes, onArrival, mapRef }: 
   const routesRef = useRef(routes);
   routesRef.current = routes;
   const arrivedRef = useRef(false);
+  const smoothAngleRef = useRef(0);
 
   const buildFullPath = useCallback((route: CarRoute, allRoutes: RouteSegment[]): [number, number][] | null => {
     const pathJunctions = findBestPath(route.from, route.to, allRoutes);
@@ -81,7 +89,9 @@ export default function MapCarAnimator({ carRoute, routes, onArrival, mapRef }: 
     coordsRef.current = coords;
     idxRef.current = 0;
     subRef.current = 0;
+    smoothAngleRef.current = getDirection(coords[0], coords[1]);
     setPosition(coords[0]);
+    setAngle(smoothAngleRef.current);
     setVisible(true);
     setTrail([coords[0]]);
 
@@ -128,16 +138,21 @@ export default function MapCarAnimator({ carRoute, routes, onArrival, mapRef }: 
       subRef.current = t;
 
       const pos = interpolate(coords[i], coords[i + 1], t);
-      const dir = getDirection(coords[i], coords[i + 1]);
+
+      // Smooth direction: exponential moving average with wrap-around handling
+      const rawDir = getDirection(coords[i], coords[i + 1]);
+      const prev = smoothAngleRef.current;
+      const diff = angleDiff(prev, rawDir);
+      const smoothed = prev + diff * 0.25; // 25% weight to new direction = smooth transitions
+      smoothAngleRef.current = smoothed;
 
       setPosition(pos);
-      setAngle(dir);
+      setAngle(smoothed);
       setTrail(prev => {
         const next = [...prev, pos];
         return next.length > 300 ? next.slice(-300) : next;
       });
 
-      // Camera follows car smoothly
       if (mapRef.current && frameCount % 20 === 0) {
         mapRef.current.panTo([pos[0], pos[1]], { duration: 800 });
       }
@@ -146,13 +161,9 @@ export default function MapCarAnimator({ carRoute, routes, onArrival, mapRef }: 
       if (carRoute && frameCount % 180 === 0) {
         const reroute = findBestPath(carRoute.from, carRoute.to, routesRef.current);
         if (reroute && reroute.length >= 2 && reroute.join() !== carRoute.path.join()) {
-          const newCoords = buildFullPath(
-            { ...carRoute, path: reroute },
-            routesRef.current
-          );
+          const newCoords = buildFullPath({ ...carRoute, path: reroute }, routesRef.current);
           if (newCoords && newCoords.length >= 2) {
-            let closestIdx = 0;
-            let closestDist = Infinity;
+            let closestIdx = 0, closestDist = Infinity;
             for (let j = 0; j < newCoords.length; j++) {
               const d = distance(pos, newCoords[j]);
               if (d < closestDist) { closestDist = d; closestIdx = j; }
@@ -177,146 +188,172 @@ export default function MapCarAnimator({ carRoute, routes, onArrival, mapRef }: 
 
   if (!visible || !position) return null;
 
-  // Tesla Model S proportions: ~4.97m long, ~1.96m wide → ratio ~2.5:1
-  const CAR_L = 64; // length (along direction of travel)
-  const CAR_W = 26; // width
+  // Dimensions: car faces RIGHT (east) at rotate(0)
+  const BL = 66; // body length
+  const BW = 30; // body width
+  const CL = 28; // cabin length
+  const CW = 20; // cabin width
+  const WS = 6;  // wheel size
+  const HX = BL / 2 + 3; // headlight X offset from center
+  const HY = BW * 0.18;  // headlight Y offset from center
+  const TX = -(BL / 2 + 3); // tail light X offset
+  const TY = BW * 0.18;
 
   return (
     <>
-      {/* Trail glow dots */}
-      {trail.length > 3 && trail.filter((_, i) => i % 6 === 0).slice(-30).map((t, i) => (
+      {/* Trail dots */}
+      {trail.length > 3 && trail.filter((_, i) => i % 10 === 0).slice(-15).map((t, i) => (
         <Marker key={`t${i}`} longitude={t[0]} latitude={t[1]} anchor="center">
           <div
             style={{
-              width: 3 + (i / 30) * 3,
-              height: 3 + (i / 30) * 3,
+              width: 2 + (i / 15) * 2,
+              height: 2 + (i / 15) * 2,
               borderRadius: '50%',
-              background: `rgba(100,116,139,${0.06 + (i / 30) * 0.3})`,
-              boxShadow: `0 0 ${4 + (i / 30) * 6}px rgba(100,116,139,${0.1 + (i / 30) * 0.2})`,
+              background: `rgba(100,116,139,${0.05 + (i / 15) * 0.15})`,
             }}
           />
         </Marker>
       ))}
 
-      {/* Main Car Marker — Tesla Model S style */}
       <Marker longitude={position[0]} latitude={position[1]} anchor="center">
         <div
-          className="relative"
           style={{
-            width: CAR_L + 28,
-            height: CAR_W + 28,
+            width: BL + 12,
+            height: BL + 12,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
+            transform: `rotate(${angle}deg)`,
           }}
         >
-          {/* Road shadow */}
-          <div
-            className="absolute rounded-full"
-            style={{
-              width: CAR_L - 4,
-              height: CAR_W + 6,
-              background: 'rgba(0,0,0,0.3)',
-              filter: 'blur(4px)',
-              transform: `rotate(${angle}deg) translate(2px, 2px)`,
-            }}
-          />
+          {/* Drop shadow */}
+          <div style={{
+            position: 'absolute',
+            width: BL, height: BW,
+            borderRadius: '42% 42% 38% 38% / 50% 50% 42% 42%',
+            background: 'rgba(0,0,0,0.22)',
+            filter: 'blur(4px)',
+            transform: 'translate(2px, 2px)',
+          }} />
 
-          {/* Car body — Tesla grey metallic */}
-          <div
-            style={{
-              width: CAR_L,
-              height: CAR_W,
-              background: 'linear-gradient(180deg, #9CA3AF 0%, #6B7280 15%, #D1D5DB 35%, #9CA3AF 60%, #6B7280 85%, #4B5563 100%)',
-              borderRadius: '40% 40% 40% 40% / 45% 45% 45% 45%',
-              border: '1.5px solid rgba(255,255,255,0.35)',
-              boxShadow: `
-                0 0 10px rgba(0,0,0,0.3),
-                0 0 2px rgba(255,255,255,0.4),
-                inset 0 1px 0 rgba(255,255,255,0.2)
-              `,
-              transform: `rotate(${angle}deg)`,
-              position: 'relative',
-            }}
-          >
-            {/* Hood reflection */}
+          {/* ── CAR BODY ── */}
+          <div style={{
+            position: 'absolute',
+            width: BL, height: BW,
+            background: `
+              linear-gradient(180deg,
+                rgba(255,255,255,0.45) 0%,
+                #A8B4C0 8%, #8B95A5 20%, #B8C4D0 40%,
+                #8B95A5 55%, #717D8C 75%, #5A6575 100%
+              )
+            `,
+            borderRadius: '42% 42% 38% 38% / 50% 50% 42% 42%',
+            border: '1px solid rgba(255,255,255,0.4)',
+            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.3), 0 0 6px rgba(0,0,0,0.25)',
+          }}>
+            {/* Front bumper */}
             <div style={{
               position: 'absolute',
-              top: '15%', left: '15%', width: '65%', height: '20%',
-              background: 'linear-gradient(180deg, rgba(255,255,255,0.25) 0%, transparent 100%)',
-              borderRadius: '30%',
+              right: 1, top: '20%', width: BL * 0.07, height: '60%',
+              background: 'linear-gradient(90deg, #9BA5B2, #CBD5E1)',
+              borderRadius: '0 40% 40% 0 / 0 45% 45% 0',
             }} />
-
-            {/* Windshield — dark glass from above */}
+            {/* Rear bumper */}
             <div style={{
               position: 'absolute',
-              top: '30%', left: '55%', width: '22%', height: '40%',
-              background: 'linear-gradient(180deg, #1a1a2e 0%, #16213e 50%, #0f0f1a 100%)',
-              borderRadius: '30% 5% 5% 30% / 40% 40% 40% 40%',
-              border: '1px solid rgba(255,255,255,0.1)',
-            }} />
-
-            {/* Roof — dark panoramic glass */}
-            <div style={{
-              position: 'absolute',
-              top: '30%', left: '38%', width: '18%', height: '40%',
-              background: 'linear-gradient(180deg, #1e293b 0%, #0f172a 100%)',
-              borderRadius: '20% 20% 20% 20% / 30% 30% 30% 30%',
-              border: '1px solid rgba(255,255,255,0.08)',
-            }} />
-
-            {/* Rear window */}
-            <div style={{
-              position: 'absolute',
-              top: '30%', left: '23%', width: '16%', height: '40%',
-              background: 'linear-gradient(180deg, #1a1a2e 0%, #0f0f1a 100%)',
-              borderRadius: '5% 30% 30% 5% / 40% 40% 40% 40%',
-              border: '1px solid rgba(255,255,255,0.08)',
-            }} />
-
-            {/* Front headlights — slim LED strip */}
-            <div style={{
-              position: 'absolute',
-              top: '22%', right: 1, width: 3, height: 10,
-              background: '#F8FAFC',
-              borderRadius: '0 3px 3px 0',
-              boxShadow: '0 0 8px #F8FAFC, 0 0 16px #E2E8F0',
-            }} />
-            <div style={{
-              position: 'absolute',
-              bottom: '22%', right: 1, width: 3, height: 10,
-              background: '#F8FAFC',
-              borderRadius: '0 3px 3px 0',
-              boxShadow: '0 0 8px #F8FAFC, 0 0 16px #E2E8F0',
-            }} />
-
-            {/* Rear lights — red LED */}
-            <div style={{
-              position: 'absolute',
-              top: '22%', left: 1, width: 3, height: 10,
-              background: '#EF4444',
-              borderRadius: '3px 0 0 3px',
-              boxShadow: '0 0 6px #EF4444',
-            }} />
-            <div style={{
-              position: 'absolute',
-              bottom: '22%', left: 1, width: 3, height: 10,
-              background: '#EF4444',
-              borderRadius: '3px 0 0 3px',
-              boxShadow: '0 0 6px #EF4444',
+              left: 1, top: '20%', width: BL * 0.05, height: '60%',
+              background: 'linear-gradient(90deg, #C0CAD6, #8B95A5)',
+              borderRadius: '40% 0 0 40% / 45% 0 0 45%',
             }} />
           </div>
 
-          {/* Subtle ground glow */}
-          <div
-            className="absolute rounded-full"
-            style={{
-              width: CAR_L - 8,
-              height: CAR_W + 2,
-              background: 'radial-gradient(ellipse, rgba(156,163,175,0.2) 0%, transparent 70%)',
-              transform: `rotate(${angle}deg)`,
-            }}
-          />
+          {/* ── CABIN / ROOF ── */}
+          <div style={{
+            position: 'absolute',
+            width: CL, height: CW,
+            background: 'linear-gradient(180deg, #2d3748 0%, #1a202c 50%, #171923 100%)',
+            borderRadius: '30% 30% 30% 30% / 40% 40% 40% 40%',
+            border: '1px solid rgba(255,255,255,0.1)',
+            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)',
+          }}>
+            {/* Front windshield */}
+            <div style={{
+              position: 'absolute',
+              right: 1, top: '15%', width: CL * 0.22, height: '70%',
+              background: 'linear-gradient(200deg, rgba(59,130,246,0.25), rgba(30,58,95,0.5), #1a202c)',
+              borderRadius: '30% 8% 8% 30% / 40% 30% 30% 40%',
+            }} />
+            {/* Roof + side windows */}
+            <div style={{
+              position: 'absolute',
+              left: '22%', top: '15%', width: CL * 0.52, height: '70%',
+              background: 'linear-gradient(180deg, #374151, #1f2937, #111827)',
+              borderRadius: '20%',
+              borderLeft: '1px solid rgba(255,255,255,0.06)',
+              borderRight: '1px solid rgba(255,255,255,0.06)',
+            }}>
+              <div style={{ position: 'absolute', top: 1, left: '10%', width: '80%', height: '25%',
+                background: 'linear-gradient(180deg, rgba(100,150,200,0.2), rgba(30,50,80,0.4))', borderRadius: '30%' }} />
+              <div style={{ position: 'absolute', bottom: 1, left: '10%', width: '80%', height: '25%',
+                background: 'linear-gradient(180deg, rgba(30,50,80,0.4), rgba(100,150,200,0.2))', borderRadius: '30%' }} />
+            </div>
+            {/* Rear windshield */}
+            <div style={{
+              position: 'absolute',
+              left: 1, top: '15%', width: CL * 0.22, height: '70%',
+              background: 'linear-gradient(20deg, rgba(59,130,246,0.2), rgba(20,40,60,0.5), #1a202c)',
+              borderRadius: '8% 30% 30% 8% / 30% 40% 40% 30%',
+            }} />
+          </div>
+
+          {/* ── WHEELS (4 corners, positioned with translate) ── */}
+          {[
+            [BL * 0.28, -(BW / 2 + 2)],   // front-right
+            [BL * 0.28, BW / 2 + 2],      // front-left
+            [-(BL * 0.28), -(BW / 2 + 2)], // rear-right
+            [-(BL * 0.28), BW / 2 + 2],    // rear-left
+          ].map(([x, y], i) => (
+            <div key={`w${i}`} style={{
+              position: 'absolute', width: WS, height: WS + 1,
+              background: '#1a1a1a',
+              borderRadius: '2px 2px 2px 2px / 3px 3px 3px 3px',
+              border: '1px solid rgba(255,255,255,0.12)',
+              boxShadow: 'inset 0 0 2px rgba(255,255,255,0.1)',
+              transform: `translate(${x}px, ${y}px)`,
+            }} />
+          ))}
+
+          {/* ── HEADLIGHTS (front-right, positioned with translate) ── */}
+          <div style={{
+            position: 'absolute', width: 4, height: 5,
+            background: '#FEF3C7',
+            borderRadius: '0 3px 3px 0',
+            boxShadow: '0 0 8px #FEF08A, 0 0 14px #FDE047',
+            transform: `translate(${HX}px, ${-HY}px)`,
+          }} />
+          <div style={{
+            position: 'absolute', width: 4, height: 5,
+            background: '#FEF3C7',
+            borderRadius: '0 3px 3px 0',
+            boxShadow: '0 0 8px #FEF08A, 0 0 14px #FDE047',
+            transform: `translate(${HX}px, ${HY}px)`,
+          }} />
+
+          {/* ── TAIL LIGHTS (rear-left, positioned with translate) ── */}
+          <div style={{
+            position: 'absolute', width: 4, height: 5,
+            background: '#DC2626',
+            borderRadius: '3px 0 0 3px',
+            boxShadow: '0 0 8px #EF4444, 0 0 12px #F87171',
+            transform: `translate(${TX}px, ${-TY}px)`,
+          }} />
+          <div style={{
+            position: 'absolute', width: 4, height: 5,
+            background: '#DC2626',
+            borderRadius: '3px 0 0 3px',
+            boxShadow: '0 0 8px #EF4444, 0 0 12px #F87171',
+            transform: `translate(${TX}px, ${TY}px)`,
+          }} />
         </div>
       </Marker>
     </>

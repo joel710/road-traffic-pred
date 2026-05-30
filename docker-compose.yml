@@ -1,7 +1,18 @@
 services:
-  # ─── Backend Gateway API (FastAPI) ─────────────────────────────
-  # Consumes predictions from Aiven Kafka topic 'traffic_predictions'
-  # and broadcasts them to WebSocket clients (Next.js frontend).
+  # ─── Frontend (Next.js) ─────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # ─── Backend Gateway API (FastAPI) ───────────────────────────
   backend:
     build:
       context: ./mini-services/api
@@ -9,11 +20,31 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    volumes:
+      - ./certs:/app/certs:ro
     restart: unless-stopped
 
-  # ─── Spark Structured Streaming ────────────────────────────────
-  # Reads from Aiven Kafka topic 'traffic_stream', runs LSTM inference,
-  # and writes predictions to Aiven Kafka topic 'traffic_predictions'.
+  # ─── Traffic Simulator ───────────────────────────────────────
+  simulator:
+    build:
+      context: ./mini-services/simulator
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    environment:
+      - CSV_PATH=data/test.csv
+    volumes:
+      - ./data:/app/data:ro
+      - ./certs:/app/certs:ro
+    depends_on:
+      backend:
+        condition: service_started
+    profiles:
+      - full
+    restart: unless-stopped
+
+  # ─── Spark Processor ─────────────────────────────────────────
   spark-processor:
     build:
       context: ./mini-services/spark
@@ -28,24 +59,11 @@ services:
       - SPARK_RPC_AUTHENTICATION_ENABLED=no
       - SPARK_RPC_ENCRYPTION_ENABLED=no
     volumes:
-      - ./models:/app/models
-      - ./certs:/app/certs
-    restart: unless-stopped
-
-  # ─── Traffic Simulator ─────────────────────────────────────────
-  # Reads test.csv and publishes each row to Aiven Kafka topic 'traffic_stream'.
-  simulator:
-    build:
-      context: ./mini-services/simulator
-    ports:
-      - "8001:8001"
-    env_file:
-      - .env
-    environment:
-      - CSV_PATH=data/test.csv
-    volumes:
-      - ./data:/app/data
-      - ./certs:/app/certs
+      - ./models:/app/models:ro
+      - ./certs:/app/certs:ro
     depends_on:
-      - backend
+      backend:
+        condition: service_started
+    profiles:
+      - full
     restart: unless-stopped
