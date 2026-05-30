@@ -34,3 +34,10 @@ export interface RouteSegment {
   flow: number;
   status: 'fluid' | 'moderate' | 'congested';
 }
+
+export interface CarRoute {
+  path: string[]; // junction IDs in order
+  fullCoords: [number, number][]; // all coordinates along the path
+  from: string;
+  to: string;
+}

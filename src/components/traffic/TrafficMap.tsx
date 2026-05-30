@@ -13,6 +13,7 @@ interface TrafficMapProps {
   routes: RouteSegment[];
   selectedJunction: string | null;
   onJunctionSelect: (id: string) => void;
+  children?: React.ReactNode;
 }
 
 type MapStyle = 'dark' | 'light';
@@ -28,7 +29,7 @@ const COLORS = {
   congested: '#EA580C',
 } as const;
 
-export default function TrafficMap({ junctions, routes, selectedJunction, onJunctionSelect }: TrafficMapProps) {
+export default function TrafficMap({ junctions, routes, selectedJunction, onJunctionSelect, children }: TrafficMapProps) {
   const mapRef = useRef<MapRef>(null);
   const [popupInfo, setPopupInfo] = useState<Junction | null>(null);
   const [mapStyle, setMapStyle] = useState<MapStyle>('dark');
@@ -221,6 +222,9 @@ export default function TrafficMap({ junctions, routes, selectedJunction, onJunc
             </div>
           </Marker>
         ))}
+
+        {/* ── Car Animation Layer ────────────────────────────── */}
+        {children}
 
         {/* ── Popup ──────────────────────────────────────────── */}
         <AnimatePresence>
