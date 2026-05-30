@@ -28,33 +28,6 @@ function getDirection(from: [number, number], to: [number, number]): number {
   return Math.atan2(to[1] - from[1], to[0] - from[0]) * (180 / Math.PI);
 }
 
-// Particles for exhaust effect
-function ExhaustParticles({ pos, angle }: { pos: [number, number]; angle: number }) {
-  const particles = [
-    { dx: -8, dy: 3, delay: 0, size: 3 },
-    { dx: -10, dy: -2, delay: 0.3, size: 2.5 },
-    { dx: -12, dy: 0, delay: 0.6, size: 2 },
-  ];
-  return (
-    <>
-      {particles.map((p, i) => (
-        <Marker key={i} longitude={pos[0]} latitude={pos[1]} anchor="center">
-          <div
-            className="rounded-full bg-blue-400/60"
-            style={{
-              width: p.size,
-              height: p.size,
-              transform: `translate(${Math.cos(angle * Math.PI / 180) * p.dx}px, ${Math.sin(angle * Math.PI / 180) * p.dy}px)`,
-              animation: `exhaust-fade 0.6s ease-out ${p.delay}s infinite`,
-              boxShadow: '0 0 6px rgba(96,165,250,0.5)',
-            }}
-          />
-        </Marker>
-      ))}
-    </>
-  );
-}
-
 export default function MapCarAnimator({ carRoute, routes, onArrival, mapRef }: CarAnimatorProps) {
   const [position, setPosition] = useState<[number, number] | null>(null);
   const [angle, setAngle] = useState(0);
@@ -204,145 +177,148 @@ export default function MapCarAnimator({ carRoute, routes, onArrival, mapRef }: 
 
   if (!visible || !position) return null;
 
-  const CAR_W = 54, CAR_H = 28;
+  // Tesla Model S proportions: ~4.97m long, ~1.96m wide → ratio ~2.5:1
+  const CAR_L = 64; // length (along direction of travel)
+  const CAR_W = 26; // width
 
   return (
     <>
-      {/* Trail glow line */}
-      {trail.length > 3 && trail.filter((_, i) => i % 4 === 0).slice(-40).map((t, i) => (
+      {/* Trail glow dots */}
+      {trail.length > 3 && trail.filter((_, i) => i % 6 === 0).slice(-30).map((t, i) => (
         <Marker key={`t${i}`} longitude={t[0]} latitude={t[1]} anchor="center">
           <div
             style={{
-              width: 4 + (i / 40) * 5,
-              height: 4 + (i / 40) * 5,
+              width: 3 + (i / 30) * 3,
+              height: 3 + (i / 30) * 3,
               borderRadius: '50%',
-              background: `rgba(59,130,246,${0.08 + (i / 40) * 0.45})`,
-              boxShadow: `0 0 ${6 + (i / 40) * 10}px rgba(59,130,246,${0.15 + (i / 40) * 0.3})`,
+              background: `rgba(100,116,139,${0.06 + (i / 30) * 0.3})`,
+              boxShadow: `0 0 ${4 + (i / 30) * 6}px rgba(100,116,139,${0.1 + (i / 30) * 0.2})`,
             }}
           />
         </Marker>
       ))}
 
-      {/* Exhaust */}
-      <ExhaustParticles pos={position} angle={angle} />
-
-      {/* Main Car Marker */}
-      <Marker longitude={position[0]} latitude={position[1]} anchor="center" rotation={0}>
-        <div className="relative flex items-center justify-center" style={{ width: CAR_W + 24, height: CAR_H + 24 }}>
-          {/* Large glow halo */}
+      {/* Main Car Marker — Tesla Model S style */}
+      <Marker longitude={position[0]} latitude={position[1]} anchor="center">
+        <div
+          className="relative"
+          style={{
+            width: CAR_L + 28,
+            height: CAR_W + 28,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {/* Road shadow */}
           <div
             className="absolute rounded-full"
             style={{
-              width: CAR_W + 24,
-              height: CAR_W + 24,
-              background: 'radial-gradient(circle, rgba(59,130,246,0.5) 0%, rgba(59,130,246,0.15) 40%, transparent 70%)',
-              animation: 'car-pulse 1.2s ease-in-out infinite alternate',
-            }}
-          />
-          {/* Mid glow ring */}
-          <div
-            className="absolute rounded-full"
-            style={{
-              width: CAR_W + 8,
-              height: CAR_H + 8,
-              border: '2px solid rgba(59,130,246,0.3)',
-              borderRadius: '30%',
-              animation: 'car-ring 0.8s ease-in-out infinite alternate',
+              width: CAR_L - 4,
+              height: CAR_W + 6,
+              background: 'rgba(0,0,0,0.3)',
+              filter: 'blur(4px)',
+              transform: `rotate(${angle}deg) translate(2px, 2px)`,
             }}
           />
 
-          {/* Car body */}
+          {/* Car body — Tesla grey metallic */}
           <div
-            className="relative rounded-lg shadow-2xl"
             style={{
-              width: CAR_W,
-              height: CAR_H,
-              background: 'linear-gradient(160deg, #2563EB 0%, #1E40AF 40%, #1E3A5F 100%)',
-              border: '2px solid rgba(255,255,255,0.3)',
-              boxShadow: '0 0 20px rgba(37,99,235,0.9), 0 0 40px rgba(37,99,235,0.5), 0 0 60px rgba(37,99,235,0.2)',
+              width: CAR_L,
+              height: CAR_W,
+              background: 'linear-gradient(180deg, #9CA3AF 0%, #6B7280 15%, #D1D5DB 35%, #9CA3AF 60%, #6B7280 85%, #4B5563 100%)',
+              borderRadius: '40% 40% 40% 40% / 45% 45% 45% 45%',
+              border: '1.5px solid rgba(255,255,255,0.35)',
+              boxShadow: `
+                0 0 10px rgba(0,0,0,0.3),
+                0 0 2px rgba(255,255,255,0.4),
+                inset 0 1px 0 rgba(255,255,255,0.2)
+              `,
               transform: `rotate(${angle}deg)`,
+              position: 'relative',
             }}
           >
-            {/* Roof/cabin */}
-            <div
-              style={{
-                position: 'absolute',
-                top: 3,
-                left: '30%',
-                width: CAR_W * 0.3,
-                height: CAR_H * 0.55,
-                background: 'linear-gradient(180deg, rgba(147,197,253,0.3) 0%, rgba(30,58,95,0.6) 100%)',
-                borderRadius: '3px 3px 0 0',
-                borderLeft: '1px solid rgba(255,255,255,0.15)',
-                borderRight: '1px solid rgba(255,255,255,0.15)',
-                borderTop: '1px solid rgba(255,255,255,0.2)',
-              }}
-            />
-            {/* Windshield */}
-            <div
-              style={{
-                position: 'absolute',
-                top: 3,
-                left: '58%',
-                width: CAR_W * 0.12,
-                height: CAR_H * 0.5,
-                background: 'linear-gradient(200deg, rgba(147,197,253,0.7) 0%, rgba(96,165,250,0.3) 100%)',
-                borderRadius: '1px 3px 1px 0',
-              }}
-            />
+            {/* Hood reflection */}
+            <div style={{
+              position: 'absolute',
+              top: '15%', left: '15%', width: '65%', height: '20%',
+              background: 'linear-gradient(180deg, rgba(255,255,255,0.25) 0%, transparent 100%)',
+              borderRadius: '30%',
+            }} />
+
+            {/* Windshield — dark glass from above */}
+            <div style={{
+              position: 'absolute',
+              top: '30%', left: '55%', width: '22%', height: '40%',
+              background: 'linear-gradient(180deg, #1a1a2e 0%, #16213e 50%, #0f0f1a 100%)',
+              borderRadius: '30% 5% 5% 30% / 40% 40% 40% 40%',
+              border: '1px solid rgba(255,255,255,0.1)',
+            }} />
+
+            {/* Roof — dark panoramic glass */}
+            <div style={{
+              position: 'absolute',
+              top: '30%', left: '38%', width: '18%', height: '40%',
+              background: 'linear-gradient(180deg, #1e293b 0%, #0f172a 100%)',
+              borderRadius: '20% 20% 20% 20% / 30% 30% 30% 30%',
+              border: '1px solid rgba(255,255,255,0.08)',
+            }} />
+
             {/* Rear window */}
-            <div
-              style={{
-                position: 'absolute',
-                top: 3,
-                left: '22%',
-                width: CAR_W * 0.08,
-                height: CAR_H * 0.45,
-                background: 'rgba(147,197,253,0.25)',
-                borderRadius: '3px 1px 0 1px',
-              }}
-            />
-            {/* Headlights */}
-            <div style={{ position: 'absolute', right: 2, top: 4, width: 4, height: 4, background: '#FEF08A', borderRadius: '50%', boxShadow: '0 0 6px #FEF08A, 0 0 12px #FDE047' }} />
-            <div style={{ position: 'absolute', right: 2, bottom: 4, width: 4, height: 4, background: '#FEF08A', borderRadius: '50%', boxShadow: '0 0 6px #FEF08A, 0 0 12px #FDE047' }} />
-            {/* Tail lights */}
-            <div style={{ position: 'absolute', left: 2, top: 4, width: 3.5, height: 3.5, background: '#EF4444', borderRadius: '50%', boxShadow: '0 0 6px #EF4444, 0 0 12px #F87171' }} />
-            <div style={{ position: 'absolute', left: 2, bottom: 4, width: 3.5, height: 3.5, background: '#EF4444', borderRadius: '50%', boxShadow: '0 0 6px #EF4444, 0 0 12px #F87171' }} />
-            {/* Racing stripe */}
-            <div
-              style={{
-                position: 'absolute',
-                top: '50%',
-                left: '20%',
-                width: '50%',
-                height: 2,
-                background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.3) 30%, rgba(255,255,255,0.3) 70%, transparent 100%)',
-                transform: 'translateY(-50%)',
-              }}
-            />
-            {/* Wheels */}
-            <div style={{ position: 'absolute', right: 4, top: -3, width: 5, height: 5, background: '#0F172A', borderRadius: 1, border: '1px solid rgba(255,255,255,0.15)' }} />
-            <div style={{ position: 'absolute', right: 4, bottom: -3, width: 5, height: 5, background: '#0F172A', borderRadius: 1, border: '1px solid rgba(255,255,255,0.15)' }} />
-            <div style={{ position: 'absolute', left: 4, top: -3, width: 5, height: 5, background: '#0F172A', borderRadius: 1, border: '1px solid rgba(255,255,255,0.15)' }} />
-            <div style={{ position: 'absolute', left: 4, bottom: -3, width: 5, height: 5, background: '#0F172A', borderRadius: 1, border: '1px solid rgba(255,255,255,0.15)' }} />
+            <div style={{
+              position: 'absolute',
+              top: '30%', left: '23%', width: '16%', height: '40%',
+              background: 'linear-gradient(180deg, #1a1a2e 0%, #0f0f1a 100%)',
+              borderRadius: '5% 30% 30% 5% / 40% 40% 40% 40%',
+              border: '1px solid rgba(255,255,255,0.08)',
+            }} />
+
+            {/* Front headlights — slim LED strip */}
+            <div style={{
+              position: 'absolute',
+              top: '22%', right: 1, width: 3, height: 10,
+              background: '#F8FAFC',
+              borderRadius: '0 3px 3px 0',
+              boxShadow: '0 0 8px #F8FAFC, 0 0 16px #E2E8F0',
+            }} />
+            <div style={{
+              position: 'absolute',
+              bottom: '22%', right: 1, width: 3, height: 10,
+              background: '#F8FAFC',
+              borderRadius: '0 3px 3px 0',
+              boxShadow: '0 0 8px #F8FAFC, 0 0 16px #E2E8F0',
+            }} />
+
+            {/* Rear lights — red LED */}
+            <div style={{
+              position: 'absolute',
+              top: '22%', left: 1, width: 3, height: 10,
+              background: '#EF4444',
+              borderRadius: '3px 0 0 3px',
+              boxShadow: '0 0 6px #EF4444',
+            }} />
+            <div style={{
+              position: 'absolute',
+              bottom: '22%', left: 1, width: 3, height: 10,
+              background: '#EF4444',
+              borderRadius: '3px 0 0 3px',
+              boxShadow: '0 0 6px #EF4444',
+            }} />
           </div>
+
+          {/* Subtle ground glow */}
+          <div
+            className="absolute rounded-full"
+            style={{
+              width: CAR_L - 8,
+              height: CAR_W + 2,
+              background: 'radial-gradient(ellipse, rgba(156,163,175,0.2) 0%, transparent 70%)',
+              transform: `rotate(${angle}deg)`,
+            }}
+          />
         </div>
       </Marker>
-
-      <style>{`
-        @keyframes car-pulse {
-          from { transform: scale(0.85); opacity: 0.7; }
-          to { transform: scale(1.15); opacity: 0.25; }
-        }
-        @keyframes car-ring {
-          from { transform: scale(1); opacity: 0.5; }
-          to { transform: scale(1.15); opacity: 0.15; }
-        }
-        @keyframes exhaust-fade {
-          0% { opacity: 0.8; transform: translate(0, 0) scale(1); }
-          100% { opacity: 0; transform: translate(-6px, -2px) scale(0.3); }
-        }
-      `}</style>
     </>
   );
 }
