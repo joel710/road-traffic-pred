@@ -40,11 +40,13 @@ const ROUTE_DEFS: { from: string; to: string }[] = [
   { from: 'J2', to: 'J3' },
 ];
 
-const globalMetrics: ModelMetrics = { mae: 3.24, rmse: 4.15, accuracy: 87.5 };
-const specificMetrics: ModelMetrics = { mae: 2.17, rmse: 3.08, accuracy: 91.2 };
+// Model metrics from README_MODEL.md — based on training evaluation across all junctions
+const globalMetrics: ModelMetrics = { mae: 2.61, rmse: 3.48, accuracy: 89.2 };
+const specificMetrics: ModelMetrics = { mae: 3.46, rmse: 4.32, accuracy: 86.1 };
 
+// Thresholds matching the backend Spark processor (vehicles per junction)
 const calcStatus = (v: number): 'fluid' | 'moderate' | 'congested' =>
-  v > 3500 ? 'congested' : v > 2800 ? 'moderate' : 'fluid';
+  v >= 60 ? 'congested' : v >= 30 ? 'moderate' : 'fluid';
 
 const calcTrend = (pred: number, cur: number): 'up' | 'down' | 'stable' =>
   pred > cur ? 'up' : pred < cur ? 'down' : 'stable';
@@ -114,11 +116,17 @@ export function TrafficDashboard({ initialJunction }: { initialJunction?: number
               if (j.id !== junctionId) return j;
               const newFlow = data.Vehicles ?? j.currentFlow;
               const predFlow = data.PredictedVehicles ?? j.predictedFlow;
+              // Use backend Status (fluid/moderate/congested), fallback to local calc
+              const backendStatus = data.Status?.toLowerCase();
+              const status =
+                backendStatus === 'fluid' || backendStatus === 'moderate' || backendStatus === 'congested'
+                  ? backendStatus
+                  : calcStatus(predFlow);
               return {
                 ...j,
                 currentFlow: newFlow,
                 predictedFlow: predFlow,
-                status: calcStatus(predFlow),
+                status,
                 trend: calcTrend(predFlow, newFlow),
               };
             }),
