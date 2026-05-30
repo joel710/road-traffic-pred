@@ -32,6 +32,8 @@ KAFKA_PORT = int(os.getenv("KAFKA_PORT", "9092"))
 KAFKA_USERNAME = os.getenv("KAFKA_USERNAME", "")
 KAFKA_PASSWORD = os.getenv("KAFKA_PASSWORD", "")
 KAFKA_SSL_CA = os.getenv("KAFKA_SSL_CA", "")
+KAFKA_SSL_CERT = os.getenv("KAFKA_SSL_CERT", "")
+KAFKA_SSL_KEY = os.getenv("KAFKA_SSL_KEY", "")
 TOPIC_OUTPUT = os.getenv("KAFKA_TOPIC_OUTPUT", "traffic_predictions")
 BOOTSTRAP_SERVER = f"{KAFKA_HOST}:{KAFKA_PORT}"
 
@@ -47,14 +49,24 @@ broadcast_queue: asyncio.Queue = Queue()
 
 
 def build_kafka_consumer() -> KafkaConsumer:
-    """KafkaConsumer with SASL_SSL (Aiven) or plaintext fallback."""
+    """KafkaConsumer with SSL client certs (Aiven mTLS) or SASL_SSL fallback."""
     opts = {
         "bootstrap_servers": [BOOTSTRAP_SERVER],
         "group_id": "traffic-api-consumer",
         "auto_offset_reset": "latest",
         "value_deserializer": lambda v: json.loads(v.decode("utf-8")),
     }
-    if KAFKA_USERNAME and KAFKA_PASSWORD:
+    # Prefer SSL with client certificates (Aiven mTLS)
+    if KAFKA_SSL_CA and KAFKA_SSL_CERT and KAFKA_SSL_KEY \
+       and Path(KAFKA_SSL_CA).exists() and Path(KAFKA_SSL_CERT).exists() and Path(KAFKA_SSL_KEY).exists():
+        opts.update(
+            security_protocol="SSL",
+            ssl_cafile=KAFKA_SSL_CA,
+            ssl_certfile=KAFKA_SSL_CERT,
+            ssl_keyfile=KAFKA_SSL_KEY,
+        )
+    # Fallback to SASL_SSL if only username/password are provided
+    elif KAFKA_USERNAME and KAFKA_PASSWORD:
         opts.update(
             security_protocol="SASL_SSL",
             sasl_mechanism="PLAIN",
@@ -66,9 +78,8 @@ def build_kafka_consumer() -> KafkaConsumer:
     return KafkaConsumer(TOPIC_OUTPUT, **opts)
 
 
-def kafka_listener():
+def kafka_listener(loop):
     """Background thread: read predictions from Kafka and push to the asyncio queue."""
-    loop = None
     try:
         consumer = build_kafka_consumer()
         print(f"📡 Kafka consumer listening on '{TOPIC_OUTPUT}' …")
@@ -80,9 +91,7 @@ def kafka_listener():
                 current_state[junction] = data
                 history[junction].append(data)
 
-            # Push to asyncio broadcast queue
-            if loop is None:
-                loop = asyncio.new_event_loop()
+            # Push to asyncio broadcast queue using FastAPI's running event loop
             asyncio.run_coroutine_threadsafe(
                 broadcast_queue.put(data),
                 loop,
@@ -93,8 +102,9 @@ def kafka_listener():
 
 @app.on_event("startup")
 async def startup():
-    # Start Kafka listener in background thread
-    thread = Thread(target=kafka_listener, daemon=True)
+    # Start Kafka listener in background thread, using FastAPI's event loop
+    loop = asyncio.get_running_loop()
+    thread = Thread(target=kafka_listener, args=(loop,), daemon=True)
     thread.start()
     print("✅ Kafka listener thread started")
     # Start the broadcast worker

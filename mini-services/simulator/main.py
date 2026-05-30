@@ -14,6 +14,8 @@ KAFKA_PORT = int(os.getenv("KAFKA_PORT", "9092"))
 KAFKA_USERNAME = os.getenv("KAFKA_USERNAME", "")
 KAFKA_PASSWORD = os.getenv("KAFKA_PASSWORD", "")
 KAFKA_SSL_CA = os.getenv("KAFKA_SSL_CA", "")
+KAFKA_SSL_CERT = os.getenv("KAFKA_SSL_CERT", "")
+KAFKA_SSL_KEY = os.getenv("KAFKA_SSL_KEY", "")
 KAFKA_TOPIC_INPUT = os.getenv("KAFKA_TOPIC_INPUT", "flux_data")
 DATA_PATH = os.getenv("CSV_PATH", "../data/test.csv")
 STREAM_DELAY = float(os.getenv("STREAM_DELAY", "1.0"))
@@ -21,14 +23,24 @@ BOOTSTRAP_SERVER = f"{KAFKA_HOST}:{KAFKA_PORT}"
 
 
 def build_kafka_producer() -> KafkaProducer:
-    """KafkaProducer with SASL_SSL (Aiven) or plaintext fallback."""
+    """KafkaProducer with SSL client certs (Aiven mTLS) or plaintext fallback."""
     opts = {
         "bootstrap_servers": [BOOTSTRAP_SERVER],
         "value_serializer": lambda x: json.dumps(x).encode("utf-8"),
         "acks": "all",
         "retries": 5,
     }
-    if KAFKA_USERNAME and KAFKA_PASSWORD:
+    # Prefer SSL with client certificates (Aiven mTLS)
+    if KAFKA_SSL_CA and KAFKA_SSL_CERT and KAFKA_SSL_KEY \
+       and Path(KAFKA_SSL_CA).exists() and Path(KAFKA_SSL_CERT).exists() and Path(KAFKA_SSL_KEY).exists():
+        opts.update(
+            security_protocol="SSL",
+            ssl_cafile=KAFKA_SSL_CA,
+            ssl_certfile=KAFKA_SSL_CERT,
+            ssl_keyfile=KAFKA_SSL_KEY,
+        )
+    # Fallback to SASL_SSL if only username/password are provided
+    elif KAFKA_USERNAME and KAFKA_PASSWORD:
         opts.update(
             security_protocol="SASL_SSL",
             sasl_mechanism="PLAIN",
