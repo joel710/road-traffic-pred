@@ -1,4 +1,4 @@
-# Kinetic Flow — Architecture & Documentation
+# Road Flow — Architecture & Documentation
 
 ## Table of Contents
 1. [Project Overview](#1-project-overview)
@@ -13,7 +13,7 @@
 
 ## 1. Project Overview
 
-**Kinetic Flow** is a real-time road traffic prediction system using an LSTM neural network. It streams live traffic data through Apache Kafka, processes it with PySpark Structured Streaming, runs inference with PyTorch, and displays results on an interactive Next.js map.
+**Road Flow** is a real-time road traffic prediction system using an LSTM neural network. It streams live traffic data through Apache Kafka, processes it with PySpark Structured Streaming, runs inference with PyTorch, and displays results on an interactive Next.js map.
 
 ### Tech Stack
 

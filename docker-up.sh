@@ -1,5 +1,5 @@
 #!/bin/bash
-# Kinetic Flow — One-command Docker launch
+# Road Flow — One-command Docker launch
 # Usage: ./docker-up.sh           # Frontend + API only
 #        ./docker-up.sh --full    # Full stack (incl. Spark + Simulator)
 

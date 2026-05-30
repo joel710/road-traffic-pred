@@ -320,7 +320,7 @@ export function TrafficDashboard({ initialJunction }: { initialJunction?: number
         {/* Connection Status */}
         <div className="backdrop-blur-xl bg-white/80 dark:bg-slate-900/80 rounded-2xl shadow-lg border border-white/50 dark:border-slate-800/50 px-4 py-3 flex items-center gap-3">
           <div className="flex flex-col">
-            <h1 className="text-xs font-bold text-gray-900 dark:text-white uppercase tracking-wider">Kinetic Flow AI</h1>
+            <h1 className="text-xs font-bold text-gray-900 dark:text-white uppercase tracking-wider">Road Flow AI</h1>
             <p className="text-[10px] text-gray-500 dark:text-gray-400">LSTM Inference Grid</p>
           </div>
           <div

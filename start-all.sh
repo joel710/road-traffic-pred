@@ -1,5 +1,5 @@
 #!/bin/bash
-# 🚀 Kinetic Flow — Tout lancer en une commande (backend + frontend)
+# 🚀 Road Flow — Tout lancer en une commande (backend + frontend)
 # Usage: ./start-all.sh              # API + Frontend
 #        ./start-all.sh --full       # API + Simulator + Spark + Frontend
 
@@ -11,7 +11,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}   🚦 KINETIC FLOW — Launching All Services${NC}"
+echo -e "${BLUE}   🚦 Road Flow — Launching All Services${NC}"
 echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
 echo ""
 

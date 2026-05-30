@@ -1,5 +1,5 @@
 #!/bin/bash
-# 🔍 Pre-Flight Checklist - Kinetic Flow v1.0
+# 🔍 Pre-Flight Checklist - Road Flow v1.0
 # Exécutez ce script pour vérifier que tout est prêt
 
 set -e
@@ -15,7 +15,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}   🔍 KINETIC FLOW - PRE-FLIGHT CHECKLIST${NC}"
+echo -e "${BLUE}   🔍 Road Flow - PRE-FLIGHT CHECKLIST${NC}"
 echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
 echo ""
 
