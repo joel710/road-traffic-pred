@@ -1,5 +1,5 @@
-pyspark
-torch
-pandas
-numpy
-kafka-python
+pyspark==3.5.0
+torch==2.1.1
+pandas==2.1.3
+numpy==1.24.3
+kafka-python==2.0.2
