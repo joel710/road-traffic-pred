@@ -41,6 +41,9 @@ if [ ! -f "$PROJECT_DIR/.env" ]; then
 fi
 echo -e "${COLORS_GREEN}✓ .env file found${NC}"
 
+# Load .env variables
+export $(grep -v '^#' "$PROJECT_DIR/.env" | xargs)
+
 # Vérifier venv
 if [ ! -d "$PROJECT_DIR/backend_venv" ]; then
     echo -e "${COLORS_RED}❌ backend_venv not found!${NC}"
@@ -58,9 +61,8 @@ echo ""
 echo -e "${COLORS_YELLOW}[1/3] Starting FastAPI Backend on port 8000...${NC}"
 (
   cd "$PROJECT_DIR"
-  source backend_venv/bin/activate
   export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
-  exec uvicorn mini-services/api/main:app --host 0.0.0.0 --port 8000 --reload
+  exec "$PROJECT_DIR/venv/bin/uvicorn" main:app --app-dir mini-services/api --host 0.0.0.0 --port 8000 --reload
 ) &
 API_PID=$!
 echo -e "${COLORS_GREEN}✓ API started (PID: $API_PID)${NC}"
@@ -71,9 +73,8 @@ if [ "$1" == "--with-simulator" ]; then
   echo -e "${COLORS_YELLOW}[2/3] Starting Simulator...${NC}"
   (
     cd "$PROJECT_DIR"
-    source backend_venv/bin/activate
     export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
-    exec python mini-services/simulator/main.py
+    exec "$PROJECT_DIR/venv/bin/python" mini-services/simulator/main.py
   ) &
   SIM_PID=$!
   echo -e "${COLORS_GREEN}✓ Simulator started (PID: $SIM_PID)${NC}"
@@ -88,10 +89,13 @@ echo -e "${COLORS_YELLOW}[3/3] Starting Spark Processor...${NC}"
   export PYTHONPATH="$PROJECT_DIR:$PYTHONPATH"
   
   cd "$PROJECT_DIR"
-  source backend_venv/bin/activate
+  source venv/bin/activate
+  
+  export PYSPARK_PYTHON="$PROJECT_DIR/venv/bin/python"
+  export PYSPARK_DRIVER_PYTHON="$PROJECT_DIR/venv/bin/python"
   
   exec $SPARK_HOME/bin/spark-submit \
-    --master local[*] \
+    --master "local[*]" \
     --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 \
     --driver-memory 1g \
     --executor-memory 1g \

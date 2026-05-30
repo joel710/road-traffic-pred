@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from 'react';
 import { Junction, FlowPrediction, ModelMetrics } from '@/types/traffic';
+import ThreeCarVisualizer from './ThreeCarVisualizer';
 import {
   Search,
   TrendingUp,
@@ -223,6 +224,13 @@ export default function Sidebar({
                   </ResponsiveContainer>
                 )}
               </div>
+
+              {/* 3D Cyber Car Visualizer (only if selected) */}
+              {isSelected && (
+                <div className="mt-3 h-28 w-full rounded-xl overflow-hidden bg-slate-950/20 backdrop-blur-md border border-white/10 shadow-inner relative flex items-center justify-center">
+                  <ThreeCarVisualizer status={junction.status} />
+                </div>
+              )}
             </div>
           );
         })}

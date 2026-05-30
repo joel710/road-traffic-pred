@@ -20,6 +20,8 @@ KAFKA_PORT = int(os.getenv("KAFKA_PORT", "9092"))
 KAFKA_USERNAME = os.getenv("KAFKA_USERNAME", "")
 KAFKA_PASSWORD = os.getenv("KAFKA_PASSWORD", "")
 KAFKA_SSL_CA = os.getenv("KAFKA_SSL_CA", "")
+KAFKA_SSL_CERT = os.getenv("KAFKA_SSL_CERT", "")
+KAFKA_SSL_KEY = os.getenv("KAFKA_SSL_KEY", "")
 TOPIC_INPUT = os.getenv("KAFKA_TOPIC_INPUT", "traffic_stream")
 CSV_PATH = os.getenv("CSV_PATH", "data/test.csv")
 STREAM_DELAY = float(os.getenv("STREAM_DELAY", "1.0"))
@@ -28,7 +30,7 @@ BOOTSTRAP_SERVER = f"{KAFKA_HOST}:{KAFKA_PORT}"
 
 
 def build_kafka_producer() -> KafkaProducer:
-    """Build a KafkaProducer with SASL_SSL for Aiven, or plaintext fallback for dev."""
+    """Build a KafkaProducer with SSL client certs (Aiven mTLS) or plaintext fallback."""
     common_opts = {
         "bootstrap_servers": [BOOTSTRAP_SERVER],
         "value_serializer": lambda x: json.dumps(x).encode("utf-8"),
@@ -36,17 +38,26 @@ def build_kafka_producer() -> KafkaProducer:
         "acks": "all",
     }
 
-    # If Aiven credentials are present, use SASL_SSL
-    if KAFKA_USERNAME and KAFKA_PASSWORD:
-        ssl_opts = {
-            "security_protocol": "SASL_SSL",
-            "sasl_mechanism": "PLAIN",
-            "sasl_plain_username": KAFKA_USERNAME,
-            "sasl_plain_password": KAFKA_PASSWORD,
-        }
+    # Prefer SSL with client certificates (Aiven mTLS)
+    if KAFKA_SSL_CA and KAFKA_SSL_CERT and KAFKA_SSL_KEY \
+       and Path(KAFKA_SSL_CA).exists() and Path(KAFKA_SSL_CERT).exists() and Path(KAFKA_SSL_KEY).exists():
+        common_opts.update(
+            security_protocol="SSL",
+            ssl_cafile=KAFKA_SSL_CA,
+            ssl_certfile=KAFKA_SSL_CERT,
+            ssl_keyfile=KAFKA_SSL_KEY,
+        )
+        print(f"🔐 Connecting to Aiven Kafka at {BOOTSTRAP_SERVER} (SSL mTLS)")
+    # Fallback to SASL_SSL if only username/password are provided
+    elif KAFKA_USERNAME and KAFKA_PASSWORD:
+        common_opts.update(
+            security_protocol="SASL_SSL",
+            sasl_mechanism="PLAIN",
+            sasl_plain_username=KAFKA_USERNAME,
+            sasl_plain_password=KAFKA_PASSWORD,
+        )
         if KAFKA_SSL_CA and Path(KAFKA_SSL_CA).exists():
-            ssl_opts["ssl_cafile"] = KAFKA_SSL_CA
-        common_opts.update(ssl_opts)
+            common_opts["ssl_cafile"] = KAFKA_SSL_CA
         print(f"🔐 Connecting to Aiven Kafka at {BOOTSTRAP_SERVER} (SASL_SSL)")
     else:
         print(f"🔓 Connecting to local Kafka at {BOOTSTRAP_SERVER} (PLAINTEXT)")

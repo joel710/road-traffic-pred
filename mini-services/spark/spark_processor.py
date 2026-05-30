@@ -15,6 +15,8 @@ KAFKA_PORT = int(os.getenv("KAFKA_PORT", "9092"))
 KAFKA_USERNAME = os.getenv("KAFKA_USERNAME", "")
 KAFKA_PASSWORD = os.getenv("KAFKA_PASSWORD", "")
 KAFKA_SSL_CA = os.getenv("KAFKA_SSL_CA", "")
+KAFKA_SSL_CERT = os.getenv("KAFKA_SSL_CERT", "")
+KAFKA_SSL_KEY = os.getenv("KAFKA_SSL_KEY", "")
 TOPIC_INPUT = os.getenv("KAFKA_TOPIC_INPUT", "traffic_stream")
 TOPIC_OUTPUT = os.getenv("KAFKA_TOPIC_OUTPUT", "traffic_predictions")
 MODEL_PATH = os.getenv("MODEL_PATH", "models/global_model.pt")
@@ -22,14 +24,24 @@ BOOTSTRAP_SERVER = f"{KAFKA_HOST}:{KAFKA_PORT}"
 
 
 def build_kafka_producer() -> KafkaProducer:
-    """KafkaProducer with SASL_SSL (Aiven) or plaintext fallback."""
+    """KafkaProducer with SSL client certs (Aiven mTLS) or plaintext fallback."""
     opts = {
         "bootstrap_servers": [BOOTSTRAP_SERVER],
         "value_serializer": lambda x: json.dumps(x).encode("utf-8"),
         "acks": "all",
         "retries": 5,
     }
-    if KAFKA_USERNAME and KAFKA_PASSWORD:
+    # Prefer SSL with client certificates (Aiven mTLS)
+    if KAFKA_SSL_CA and KAFKA_SSL_CERT and KAFKA_SSL_KEY \
+       and Path(KAFKA_SSL_CA).exists() and Path(KAFKA_SSL_CERT).exists() and Path(KAFKA_SSL_KEY).exists():
+        opts.update(
+            security_protocol="SSL",
+            ssl_cafile=KAFKA_SSL_CA,
+            ssl_certfile=KAFKA_SSL_CERT,
+            ssl_keyfile=KAFKA_SSL_KEY,
+        )
+    # Fallback to SASL_SSL if only username/password are provided
+    elif KAFKA_USERNAME and KAFKA_PASSWORD:
         opts.update(
             security_protocol="SASL_SSL",
             sasl_mechanism="PLAIN",
@@ -46,13 +58,18 @@ class TrafficLSTM(nn.Module):
     def __init__(self, input_size=9, hidden_size=128, num_layers=2):
         super().__init__()
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=0.3)
-        self.bn = nn.BatchNorm1d(hidden_size)
-        self.fc = nn.Linear(hidden_size, 1)
+        self.batch_norm = nn.BatchNorm1d(hidden_size)
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 1)
+        )
 
     def forward(self, x):
         out, _ = self.lstm(x)
         out = out[:, -1, :]
-        out = self.bn(out)
+        out = self.batch_norm(out)
         out = self.fc(out)
         return out
 
@@ -153,7 +170,22 @@ kafka_read_opts = {
 }
 
 # Add SSL config for Aiven if needed
-if KAFKA_USERNAME and KAFKA_PASSWORD:
+# Prefer SSL with client certificates (Aiven mTLS, PEM-based)
+if KAFKA_SSL_CA and KAFKA_SSL_CERT and KAFKA_SSL_KEY \
+   and Path(KAFKA_SSL_CA).exists() and Path(KAFKA_SSL_CERT).exists() and Path(KAFKA_SSL_KEY).exists():
+    # Java Kafka client expects private key in the keystore PEM file.
+    # Combine key + cert into a single PEM so the JVM can load both.
+    _combined_keystore = Path("/tmp/kafka_keystore_combined.pem")
+    _combined_keystore.write_text(
+        Path(KAFKA_SSL_KEY).read_text() + Path(KAFKA_SSL_CERT).read_text()
+    )
+    kafka_read_opts["kafka.security.protocol"] = "SSL"
+    kafka_read_opts["kafka.ssl.truststore.location"] = KAFKA_SSL_CA
+    kafka_read_opts["kafka.ssl.truststore.type"] = "PEM"
+    kafka_read_opts["kafka.ssl.keystore.location"] = str(_combined_keystore)
+    kafka_read_opts["kafka.ssl.keystore.type"] = "PEM"
+# Fallback to SASL_SSL if only username/password are provided
+elif KAFKA_USERNAME and KAFKA_PASSWORD:
     kafka_read_opts["kafka.security.protocol"] = "SASL_SSL"
     kafka_read_opts["kafka.sasl.mechanism"] = "PLAIN"
     kafka_read_opts["kafka.sasl.jaas.config"] = (
