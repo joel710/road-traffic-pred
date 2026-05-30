@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Kinetic Flow - Real-Time Traffic Prediction",
+  title: "Road Flow - Real-Time Traffic Prediction",
   description: "Professional real-time traffic prediction system using LSTM neural networks. Precision Traffic AI for urban navigation.",
   keywords: ["Traffic Prediction", "LSTM", "Neural Network", "Real-time", "Navigation", "AI"],
   authors: [{ name: "Traffic AI Team" }],
@@ -25,7 +25,7 @@ export const metadata: Metadata = {
     apple: "/favicon.svg",
   },
   openGraph: {
-    title: "Kinetic Flow - Traffic Prediction",
+    title: "Road Flow - Traffic Prediction",
     description: "Real-time traffic prediction with LSTM neural networks",
     type: "website",
     images: [

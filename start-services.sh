@@ -1,5 +1,5 @@
 #!/bin/bash
-# 🚀 Script de démarrage complet - Kinetic Flow
+# 🚀 Script de démarrage complet - Road Flow
 
 set -e
 
@@ -12,7 +12,7 @@ COLORS_RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 echo -e "${COLORS_BLUE}════════════════════════════════════════════════════════════════${NC}"
-echo -e "${COLORS_BLUE}   🚦 KINETIC FLOW - Real-Time Traffic Prediction System${NC}"
+echo -e "${COLORS_BLUE}   🚦 Road Flow - Real-Time Traffic Prediction System${NC}"
 echo -e "${COLORS_BLUE}════════════════════════════════════════════════════════════════${NC}"
 echo ""
 

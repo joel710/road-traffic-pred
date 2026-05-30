@@ -1,4 +1,4 @@
-# Kinetic Flow — Real-Time Traffic Prediction
+# Road Flow — Real-Time Traffic Prediction
 
 LSTM neural network + Apache Kafka Streaming + Interactive 3D Map visualization for real-time road traffic prediction.
 

@@ -86,7 +86,7 @@ export function Launchpad() {
               <Navigation2 className="w-5 h-5 text-white" />
             </div>
             <div>
-              <span className="font-bold text-lg text-slate-900 dark:text-white block md:inline-block">Kinetic Flow</span>
+              <span className="font-bold text-lg text-slate-900 dark:text-white block md:inline-block">Road Flow</span>
               <span className="hidden md:inline-block mx-2 text-slate-300 dark:text-slate-700">|</span>
               <span className="text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-[0.2em]">Precision Traffic AI</span>
             </div>
@@ -222,7 +222,7 @@ export function Launchpad() {
 
           {/* Footer */}
           <footer className="text-center text-xs text-slate-400 dark:text-slate-600 pb-8">
-            <p>Kinetic Flow • Precision Traffic AI • Running on LSTM Neural Network</p>
+            <p>Road Flow • Precision Traffic AI • Running on LSTM Neural Network</p>
           </footer>
         </div>
       </main>
