@@ -14,6 +14,7 @@ interface TrafficMapProps {
   selectedJunction: string | null;
   onJunctionSelect: (id: string) => void;
   children?: React.ReactNode;
+  mapRef?: React.RefObject<MapRef | null>;
 }
 
 type MapStyle = 'dark' | 'light';
@@ -29,8 +30,9 @@ const COLORS = {
   congested: '#EA580C',
 } as const;
 
-export default function TrafficMap({ junctions, routes, selectedJunction, onJunctionSelect, children }: TrafficMapProps) {
-  const mapRef = useRef<MapRef>(null);
+export default function TrafficMap({ junctions, routes, selectedJunction, onJunctionSelect, children, mapRef: externalMapRef }: TrafficMapProps) {
+  const internalMapRef = useRef<MapRef>(null);
+  const mapRef = externalMapRef ?? internalMapRef;
   const [popupInfo, setPopupInfo] = useState<Junction | null>(null);
   const [mapStyle, setMapStyle] = useState<MapStyle>('dark');
   const [styleLoaded, setStyleLoaded] = useState(false);
@@ -52,13 +54,18 @@ export default function TrafficMap({ junctions, routes, selectedJunction, onJunc
     }),
   }), [routes, junctions]);
 
-  // ─── Camera transitions with smooth 3D perspective ──────────
+  const prevSelectedRef = useRef<string | null>(null);
+
+  // ─── Camera transitions (only when selected junction changes) ──
   useEffect(() => {
     if (!mapRef.current) return;
+    // Only fly when selection actually changes, not on every junction update
+    if (selectedJunction === prevSelectedRef.current) return;
+    prevSelectedRef.current = selectedJunction;
+
     if (selectedJunction) {
       const j = junctions.find((j) => j.id === selectedJunction);
       if (j) {
-        // Unique rotation per junction for varied perspectives
         const bearings: Record<string, number> = { J1: -30, J2: 25, J3: 40, J4: -15 };
         mapRef.current.flyTo({
           center: [j.lng, j.lat],

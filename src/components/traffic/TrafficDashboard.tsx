@@ -3,6 +3,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
+import { MapRef } from 'react-map-gl/maplibre';
 import { ArrowLeft, Play, Pause } from 'lucide-react';
 import Link from 'next/link';
 import { Junction, RouteSegment, ModelMetrics, CarRoute } from '@/types/traffic';
@@ -93,6 +94,7 @@ export function TrafficDashboard({ initialJunction }: { initialJunction?: number
   const [wsConnected, setWsConnected] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [liveMetrics, setLiveMetrics] = useState<ModelMetrics>({ mae: 0, rmse: 0, accuracy: 0 });
+  const mapRef = useRef<MapRef | null>(null);
 
   // Car route state
   const [carRoute, setCarRoute] = useState<CarRoute | null>(null);
@@ -265,11 +267,13 @@ export function TrafficDashboard({ initialJunction }: { initialJunction?: number
           routes={routes}
           selectedJunction={selectedJunction}
           onJunctionSelect={handleJunctionSelect}
+          mapRef={mapRef}
         >
           <MapCarAnimator
             carRoute={carRoute}
             routes={routes}
             onArrival={handleCarArrival}
+            mapRef={mapRef}
           />
         </TrafficMap>
       </div>
