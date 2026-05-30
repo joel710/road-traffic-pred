@@ -2,12 +2,15 @@ import os
 import json
 import torch
 import torch.nn as nn
+import numpy as np
+import joblib
+from collections import deque, defaultdict
 from pathlib import Path
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json, to_json, struct
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, FloatType
 from kafka import KafkaProducer
-from datetime import datetime
+from datetime import datetime, timezone
 
 # ─── Aiven Kafka Configuration ───────────────────────────────────
 KAFKA_HOST = os.getenv("KAFKA_HOST", "localhost")
@@ -83,6 +86,26 @@ try:
 except Exception as e:
     print(f"❌ Error loading model: {e}")
 
+# ─── Load Scalers (fitted on training data) ────────────────────────
+SCALER_X_PATH = os.getenv("SCALER_X_PATH", "models/scaler_x.pkl")
+SCALER_Y_PATH = os.getenv("SCALER_Y_PATH", "models/scaler_y.pkl")
+try:
+    scaler_x = joblib.load(SCALER_X_PATH)
+    scaler_y = joblib.load(SCALER_Y_PATH)
+    print(f"✅ Scalers loaded (y: mean={scaler_y.mean_[0]:.1f}, scale={scaler_y.scale_[0]:.1f})")
+except Exception as e:
+    print(f"❌ Error loading scalers: {e}")
+    scaler_x = None
+    scaler_y = None
+
+# ─── Per-junction sliding window buffer (24 time steps) ─────────────
+FEATURE_COLS = [
+    "hour_sin", "hour_cos", "dayofweek", "month", "is_weekend",
+    "veh_lag_1", "veh_lag_2", "veh_lag_3", "veh_lag_24",
+]
+SEQ_LEN = 24
+junction_buffer: dict[int, deque] = defaultdict(lambda: deque(maxlen=SEQ_LEN))
+
 # ─── Spark Session (local[*]) ────────────────────────────────────
 spark = SparkSession.builder \
     .appName("TrafficPredictionStreaming") \
@@ -113,50 +136,72 @@ output_producer = build_kafka_producer()
 
 
 def predict_and_publish(batch_df, batch_id):
-    """
-    Vectorised LSTM inference → publish predictions to output Kafka topic.
-    No Redis, no PostgreSQL – pure Kafka pipeline.
-    """
+    """Stateful LSTM inference with 24-step sequences and scaler normalization."""
     row_count = batch_df.count()
     if row_count == 0:
         return
 
-    print(f"⚡ Processing micro-batch {batch_id} ({row_count} rows) …")
     pdf = batch_df.toPandas()
+    pdf[FEATURE_COLS] = pdf[FEATURE_COLS].fillna(0.0)
+    pdf["Vehicles"] = pdf["Vehicles"].fillna(0)
 
-    feature_cols = [
-        "hour_sin", "hour_cos", "dayofweek", "month", "is_weekend",
-        "veh_lag_1", "veh_lag_2", "veh_lag_3", "veh_lag_24",
-    ]
-    pdf[feature_cols] = pdf[feature_cols].fillna(15.0)
-    pdf["Vehicles"] = pdf["Vehicles"].fillna(15)
+    # Sort by DateTime to maintain temporal order per junction
+    pdf = pdf.sort_values("DateTime")
 
-    features_array = pdf[feature_cols].values
-    features_tensor = torch.tensor(features_array, dtype=torch.float32).unsqueeze(1)
+    published = 0
+    sample_log = None
 
-    with torch.no_grad():
-        predictions = model(features_tensor).squeeze(-1).numpy()
+    for _, row in pdf.iterrows():
+        junction = int(row["Junction"])
+        vehicles = int(row["Vehicles"])
 
-    # Publish each prediction to Kafka output topic
-    for idx, row in pdf.iterrows():
-        pred_val = max(0.0, round(float(predictions[idx]), 2))
+        # Append features to this junction's sliding window
+        features_raw = np.array([float(row[c]) for c in FEATURE_COLS], dtype=np.float32)
+        junction_buffer[junction].append(features_raw)
+
+        if len(junction_buffer[junction]) < SEQ_LEN:
+            continue  # Not enough history yet
+
+        # Build sequence (24, 9) → normalize → predict → denormalize
+        seq_raw = np.array(list(junction_buffer[junction]))  # (24, 9)
+        if scaler_x is not None:
+            seq_scaled = scaler_x.transform(seq_raw)
+        else:
+            seq_scaled = seq_raw
+
+        seq_tensor = torch.tensor(seq_scaled, dtype=torch.float32).unsqueeze(0)  # (1, 24, 9)
+
+        with torch.no_grad():
+            pred_scaled = model(seq_tensor).item()
+
+        if scaler_y is not None:
+            pred_val = max(0.0, round(float(scaler_y.inverse_transform([[pred_scaled]])[0, 0]), 2))
+        else:
+            pred_val = max(0.0, round(float(pred_scaled), 2))
+
         status = "fluid" if pred_val < 30 else "moderate" if pred_val < 60 else "congested"
 
         result = {
             "DateTime": str(row["DateTime"]),
-            "Junction": int(row["Junction"]),
-            "Vehicles": int(row["Vehicles"]),
+            "Junction": junction,
+            "Vehicles": vehicles,
             "PredictedVehicles": pred_val,
             "Status": status,
-            "Timestamp": datetime.utcnow().isoformat(),
+            "Timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
         try:
             output_producer.send(TOPIC_OUTPUT, value=result)
+            published += 1
+            if sample_log is None:
+                sample_log = f"   Sample: J{junction} | Actual={vehicles} veh | Pred={pred_val} veh | Status={status}"
         except Exception as e:
             print(f"⚠️ Failed to publish prediction to Kafka: {e}")
 
-    print(f"🔮 Published {len(pdf)} predictions to topic '{TOPIC_OUTPUT}'.")
+    if published > 0:
+        print(f"🔮 Published {published} predictions to topic '{TOPIC_OUTPUT}'.")
+        if sample_log:
+            print(sample_log)
 
 
 # ─── Kafka Input Stream ──────────────────────────────────────────
