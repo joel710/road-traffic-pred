@@ -25,7 +25,8 @@ interface SidebarProps {
   selectedJunction: string | null;
   onJunctionSelect: (id: string) => void;
   modelMetrics: ModelMetrics;
-  modelType: 'global' | 'specific';
+  onNavigateTo?: (targetId: string) => void;
+  carOrigin?: string | null;
 }
 
 // Hook to safely detect client-side mounting
@@ -79,7 +80,8 @@ export default function Sidebar({
   selectedJunction,
   onJunctionSelect,
   modelMetrics,
-  modelType
+  onNavigateTo,
+  carOrigin,
 }: SidebarProps) {
   const isClient = useIsClient();
 
@@ -97,17 +99,14 @@ export default function Sidebar({
         </div>
       </div>
 
-      {/* Model Metrics Card */}
+      {/* Model Metrics Card (live-computed from streaming data) */}
       <div className="backdrop-blur-xl bg-white/80 rounded-2xl shadow-lg shadow-black/5 border border-white/50 p-4">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
             Model Performance
           </h3>
-          <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${modelType === 'global'
-            ? 'bg-blue-50 text-blue-600'
-            : 'bg-emerald-50 text-emerald-600'
-            }`}>
-            {modelType === 'global' ? 'Global Model' : 'Specific Model'}
+          <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-blue-50 text-blue-600">
+            Live Metrics
           </span>
         </div>
 
@@ -160,7 +159,21 @@ export default function Sidebar({
                     }`} />
                   <h4 className="font-semibold text-sm text-gray-900">{junction.name}</h4>
                 </div>
-                {getTrendIcon(junction.trend)}
+                <div className="flex items-center gap-1.5">
+                  {getTrendIcon(junction.trend)}
+                  {onNavigateTo && carOrigin && carOrigin !== junction.id && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onNavigateTo(junction.id);
+                      }}
+                      className="text-[9px] font-bold px-2 py-1 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors shadow-sm"
+                      title={`Drive from ${carOrigin} to ${junction.id}`}
+                    >
+                      GO
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Flow Stats */}
