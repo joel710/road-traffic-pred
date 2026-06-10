@@ -10,7 +10,9 @@ from threading import Thread
 from collections import deque, defaultdict
 from typing import Optional
 from datetime import datetime
+import time
 from kafka import KafkaConsumer
+from kafka.errors import NoBrokersAvailable
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -100,10 +102,30 @@ def kafka_listener(loop):
         print(f"❌ Kafka consumer error: {e}")
 
 
+def wait_for_kafka(retries=30, delay=2):
+    """Block until Kafka broker is reachable, with retries."""
+    for attempt in range(retries):
+        try:
+            consumer = build_kafka_consumer()
+            consumer.close()
+            print("✅ Kafka broker reachable")
+            return True
+        except NoBrokersAvailable:
+            print(f"⏳ Waiting for Kafka broker... ({attempt + 1}/{retries})")
+            time.sleep(delay)
+        except Exception as e:
+            print(f"⏳ Kafka not ready: {e} ({attempt + 1}/{retries})")
+            time.sleep(delay)
+    print("❌ Kafka broker not available after timeout")
+    return False
+
+
 @app.on_event("startup")
 async def startup():
-    # Start Kafka listener in background thread, using FastAPI's event loop
     loop = asyncio.get_running_loop()
+    # Wait for Kafka to be ready before starting the listener
+    await loop.run_in_executor(None, wait_for_kafka)
+    # Start Kafka listener in background thread, using FastAPI's event loop
     thread = Thread(target=kafka_listener, args=(loop,), daemon=True)
     thread.start()
     print("✅ Kafka listener thread started")
