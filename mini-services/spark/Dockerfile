@@ -1,13 +1,13 @@
-FROM bitnami/spark:latest
+FROM bitnami/spark:3.5
 
 USER root
 RUN apt-get update && apt-get install -y \
     gcc python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --no-cache-dir \
-    torch numpy pandas kafka-python \
-    python-dotenv scikit-learn joblib
+# Use requirements.txt for reproducible dependency versions
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
 
 ENV PYSPARK_PYTHON=python3
 ENV PYSPARK_DRIVER_PYTHON=python3

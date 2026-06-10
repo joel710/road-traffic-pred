@@ -71,7 +71,7 @@ class TrafficSimulator:
         self.is_running = False
 
     def connect_kafka(self):
-        retries = 10
+        retries = 30
         while retries > 0:
             try:
                 self.producer = build_kafka_producer()

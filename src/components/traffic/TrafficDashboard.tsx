@@ -105,7 +105,9 @@ export function TrafficDashboard({ initialJunction }: { initialJunction?: number
   // WebSocket connection
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//localhost:8000/ws/traffic`;
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    const apiHost = apiUrl.replace(/^https?:\/\//, '');
+    const wsUrl = `${protocol}//${apiHost}/ws/traffic`;
 
     const connect = () => {
       const ws = new WebSocket(wsUrl);
@@ -168,7 +170,8 @@ export function TrafficDashboard({ initialJunction }: { initialJunction?: number
 
   // Initial data fetch
   useEffect(() => {
-    fetch('http://localhost:8000/traffic/current')
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    fetch(`${apiUrl}/traffic/current`)
       .then((r) => r.json())
       .then((data: WsPayload[]) => {
         if (Array.isArray(data) && data.length > 0) {
@@ -245,12 +248,13 @@ export function TrafficDashboard({ initialJunction }: { initialJunction?: number
   }, []);
 
   const toggleStreaming = async () => {
+    const simUrl = process.env.NEXT_PUBLIC_SIMULATOR_URL || 'http://localhost:8001';
     try {
       if (!isStreaming) {
-        await fetch('http://localhost:8001/start', { method: 'POST' });
+        await fetch(`${simUrl}/start`, { method: 'POST' });
         setIsStreaming(true);
       } else {
-        await fetch('http://localhost:8001/stop', { method: 'POST' });
+        await fetch(`${simUrl}/stop`, { method: 'POST' });
         setIsStreaming(false);
       }
     } catch (err) {
