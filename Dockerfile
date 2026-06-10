@@ -6,6 +6,13 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=optional
 
 COPY . .
+
+# Make API URLs configurable at build time (Next.js bakes NEXT_PUBLIC_* vars)
+ARG NEXT_PUBLIC_API_URL=http://localhost:8000
+ARG NEXT_PUBLIC_SIMULATOR_URL=http://localhost:8001
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_SIMULATOR_URL=$NEXT_PUBLIC_SIMULATOR_URL
+
 RUN npm run build
 
 # Production image
