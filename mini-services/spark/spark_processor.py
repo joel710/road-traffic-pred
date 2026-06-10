@@ -1,4 +1,6 @@
 import os
+import sys
+import time
 import json
 import torch
 import torch.nn as nn
@@ -10,6 +12,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json, to_json, struct
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, FloatType
 from kafka import KafkaProducer
+from kafka.errors import NoBrokersAvailable
 from datetime import datetime, timezone
 
 # ─── Aiven Kafka Configuration ───────────────────────────────────
@@ -132,6 +135,28 @@ input_schema = StructType([
 
 # ─── Kafka Producer for Output ───────────────────────────────────
 print(f"📤 Connecting output producer to {BOOTSTRAP_SERVER} …")
+
+def wait_for_kafka(retries=30, delay=2):
+    """Block until Kafka broker is reachable, with retries."""
+    for attempt in range(retries):
+        try:
+            producer = build_kafka_producer()
+            producer.close(timeout=5)
+            print("✅ Kafka broker reachable")
+            return True
+        except NoBrokersAvailable:
+            print(f"⏳ Waiting for Kafka broker... ({attempt + 1}/{retries})")
+            time.sleep(delay)
+        except Exception as e:
+            print(f"⏳ Kafka not ready: {e} ({attempt + 1}/{retries})")
+            time.sleep(delay)
+    print("❌ Kafka broker not available after timeout")
+    return False
+
+if not wait_for_kafka():
+    print("❌ Exiting: Kafka is required for the streaming pipeline.")
+    sys.exit(1)
+
 output_producer = build_kafka_producer()
 
 

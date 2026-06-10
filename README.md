@@ -1,76 +1,122 @@
 # Road Flow — Real-Time Traffic Prediction
 
-LSTM neural network + Apache Kafka Streaming + Interactive 3D Map visualization for real-time road traffic prediction.
+Road Flow is a high-performance traffic prediction system combining Deep Learning (LSTM), Distributed Streaming (Apache Kafka & Spark), and a modern 3D Interactive Dashboard.
 
-## Tech Stack
+## 🚀 Quick Start (Step-by-Step)
 
-| Layer | Technology |
-|-------|-----------|
-| **ML** | PyTorch LSTM (2-layer, 128 hidden, 9 features, seq_len=24) |
-| **Streaming** | Apache Kafka (Aiven Cloud, mTLS) + Spark Structured Streaming 3.5.0 |
-| **API** | FastAPI + WebSocket (port 8000) |
-| **Frontend** | Next.js 15, React 18, MapLibre GL, Three.js, Recharts |
+Since you have Docker and Docker Compose v2 installed, you can launch the entire infrastructure in minutes.
 
-## Quick Start
-
+### 1. Clone the Repository
 ```bash
-# Terminal 1 — Backend (API + Simulator + Spark)
-./start-services.sh --with-simulator
-
-# Terminal 2 — Frontend
-npm run dev
+git clone <repo-url> && cd road-traffic-pred
 ```
 
-- Frontend: http://localhost:3000
-- Dashboard: http://localhost:3000/dashboard
-- API Docs: http://localhost:8000/docs
-
-## Project Structure
-
+### 2. Setup Environment
+Prepare the configuration file required by the backend services:
+```bash
+cp .env.example .env
 ```
+
+### 3. Launch the System
+Depending on your needs, choose one of the following commands:
+
+**A. Full Stack (Recommended)**
+Launches the Frontend, API, Kafka Broker, Spark Processor, and the Traffic Simulator.
+```bash
+docker compose --profile full up --build
+```
+
+**B. Minimal Stack**
+Launches only the Frontend, API, and Kafka (no data simulation or ML processing).
+```bash
+docker compose up --build
+```
+
+### 4. Access the Application
+Once the containers are healthy (wait for the logs to show "connected to Kafka"), open your browser:
+- 🌐 **Main Dashboard**: [http://localhost:3000/dashboard](http://localhost:3000/dashboard)
+- 🛠️ **API Documentation**: [http://localhost:8000/docs](http://localhost:8000/docs)
+- 📊 **Spark UI**: [http://localhost:4040](http://localhost:4040) (Full stack only)
+
+---
+
+## 🛠 Tech Stack
+
+| Layer | Technology | Role |
+| :--- | :--- | :--- |
+| **ML** | PyTorch LSTM | Time-series prediction of vehicle flow |
+| **Streaming** | Apache Kafka | Real-time data bus for ingestion & predictions |
+| **Processing** | PySpark Structured Streaming | Real-time feature engineering & LSTM inference |
+| **API Gateway** | FastAPI + WebSockets | Low-latency data bridge to the frontend |
+| **Frontend** | Next.js 15 + MapLibre GL | Interactive map & 3D visualization |
+| **Visuals** | Three.js + Recharts | 3D car previews and live traffic analytics |
+
+---
+
+## ⚙️ Configuration & Advanced Usage
+
+### Environment Variables (`.env`)
+The `.env` file controls the behavior of the backend. Key parameters include:
+- `KAFKA_HOST`: Set to `kafka` for Docker, or your cloud provider URL.
+- `CSV_PATH`: Path to the traffic data file inside the container.
+- `MODEL_PATH`: Path to the trained `.pt` weights.
+
+### Using Aiven Cloud Kafka (Optional)
+If you prefer a managed Kafka instance over the local Docker broker:
+1. Edit `.env.aiven` with your Aiven credentials.
+2. Place your certificates (`ca.pem`, `service.cert`, `service.key`) in the `certs/` folder.
+3. Run:
+   ```bash
+   docker compose --env-file .env --env-file .env.aiven --profile full up --build
+   ```
+
+### Local Development (Without Docker)
+For developers who want to run services natively:
+- **Backend**: Run `./start-services.sh --with-simulator`
+- **Frontend**: Run `npm run dev`
+
+---
+
+## 📖 Project Details
+
+### System Architecture
+**Data Flow**: `CSV` $\rightarrow$ `Simulator` $\rightarrow$ `Kafka (flux_data)` $\rightarrow$ `Spark (LSTM Inference)` $\rightarrow$ `Kafka (traffic_predictions)` $\rightarrow$ `FastAPI` $\rightarrow$ `WebSocket` $\rightarrow$ `Next.js Map`.
+
+Detailed design can be found in [ARCHITECTURE.md](./ARCHITECTURE.md).
+
+### Project Structure
+```text
 mini-services/
-├── api/main.py              # FastAPI gateway + WebSocket
-├── simulator/main.py        # CSV → Kafka publisher
-└── spark/spark_processor.py # Kafka → LSTM inference → Kafka
-
+├── api/                # FastAPI gateway & WebSocket manager
+├── simulator/          # Data generator (CSV to Kafka)
+└── spark/              # PySpark ML inference engine
 src/
-├── app/                     # Next.js pages
-├── components/traffic/      # Map, Sidebar, Car animator, 3D visualizer
-├── lib/traffic/routing.ts   # Dijkstra congestion-aware pathfinding
-├── lib/data/roadGeometries.ts # Real Paris road waypoints
-└── types/traffic.ts         # TypeScript interfaces
-
-models/
-├── global_model.pt          # Trained LSTM weights
-├── scaler_x.pkl             # Feature StandardScaler
-└── scaler_y.pkl             # Target StandardScaler
-
-data/
-├── train.csv                # 38,476 training rows
-└── test.csv                 # 9,621 test rows
-
-certs/                       # Aiven Kafka mTLS certificates
-├── ca.pem, service.cert, service.key
+├── app/                # Next.js pages
+├── components/traffic/ # Map, Sidebar, Car animator, 3D visualizer
+└── lib/                # Routing (Dijkstra) & Road geometries
+models/                # Trained LSTM weights and scalers
+data/                   # Traffic datasets (Train/Test)
+certs/                  # mTLS certificates for Kafka
 ```
 
-## Architecture
+### Model Performance (Global Model)
+| Junction | Mean Absolute Error (MAE) |
+| :--- | :--- |
+| **J1** | 3.73 |
+| **J2** | 1.98 |
+| **J3** | 2.61 |
+| **J4** | 2.13 |
 
-Full pipeline: `CSV → Simulator → Kafka(flux_data) → Spark → LSTM(24-step seq) → Kafka(predictions) → FastAPI → WebSocket → Next.js Map`
+---
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for complete documentation.
+## ❓ Troubleshooting
 
-## Model Performance
+- **Port Conflict**: If port 3000 or 8000 is already in use, change the port mapping in `docker-compose.yml`.
+- **Spark Memory**: If the `spark-processor` container crashes, ensure your Docker Desktop has at least 4GB of RAM allocated (Settings $\rightarrow$ Resources).
+- **Frontend API Error**: If the dashboard cannot connect to the API, check if the `backend` container is healthy.
 
-| Junction | MAE (Global Model) |
-|----------|-------------------|
-| J1 | 3.73 |
-| J2 | 1.98 |
-| J3 | 2.61 |
-| J4 | 2.13 |
+---
 
-Live metrics (MAE, RMSE, Accuracy) are computed dynamically in the dashboard from streaming prediction errors.
-
-## Authors
-
+## ✍️ Authors
 - **Joel ADZONYA** — AI Research & Core Infrastructure
 - **Ghislaine EKLOU** — Data Engineering & Visualization Design

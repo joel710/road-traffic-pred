@@ -27,80 +27,53 @@
 | **3D Visualization** | Three.js |
 | **Charts** | Recharts |
 
-### Services (3 Python micro-services)
+### Services (5 Docker services + Kafka infra)
 
 | Service | Port | Role |
 |---------|------|------|
+| `zookeeper` | 2181 | Kafka service discovery (local) |
+| `kafka` | 9092 | Kafka broker (local or Aiven Cloud) |
 | `mini-services/api/` | 8000 | FastAPI REST + WebSocket gateway |
-| `mini-services/simulator/` | — | Reads CSV, publishes to Kafka input topic |
+| `mini-services/simulator/` | 8001 | Reads CSV, publishes to Kafka input topic |
 | `mini-services/spark/` | — | Spark streaming: Kafka → LSTM → Kafka |
+| Frontend | 3000 | Next.js dashboard with MapLibre GL |
+
+**Kafka modes**:
+- **Local (default)**: `confluentinc/cp-kafka:7.6.1` with auto-topic-creation, PLAINTEXT protocol
+- **Aiven Cloud**: External, mTLS authentication, requires certs in `certs/`
 
 ---
 
 ## 2. Architecture Diagram
 
+### Docker Deployment (recommended)
+
 ```
-┌──────────────┐    CSV rows     ┌──────────────┐
-│  Simulator   │ ──────────────→ │    Kafka      │
-│  (Python)    │   flux_data     │   (Aiven)     │
-└──────────────┘                 │              │
-                                 │ flux_data     │
-                                 │ topic         │
-                                 └──────┬───────┘
-                                        │
-                                        │ Spark readStream
-                                        ▼
-                                 ┌──────────────┐
-                                 │     Spark     │
-                                 │  Processor    │
-                                 │  (PySpark)    │
-                                 │              │
-                                 │ 1. Read JSON  │
-                                 │ 2. Buffer 24  │
-                                 │    steps/jct  │
-                                 │ 3. scaler_x   │
-                                 │ 4. LSTM infer │
-                                 │ 5. scaler_y⁻¹ │
-                                 │ 6. Publish    │
-                                 └──────┬───────┘
-                                        │
-                                        │ traffic_predictions topic
-                                        ▼
-                                 ┌──────────────┐
-                                 │    Kafka      │
-                                 │   (Aiven)     │
-                                 │ predictions   │
-                                 │ topic         │
-                                 └──────┬───────┘
-                                        │
-                                        │ KafkaConsumer (mTLS)
-                                        ▼
-                                 ┌──────────────┐
-                                 │  FastAPI      │
-                                 │  Gateway      │
-                                 │  (port 8000)  │
-                                 │              │
-                                 │ REST:         │
-                                 │ /traffic/     │
-                                 │   current     │
-                                 │ /traffic/     │
-                                 │   history/:id │
-                                 │              │
-                                 │ WebSocket:    │
-                                 │ /ws/traffic   │
-                                 └──────┬───────┘
-                                        │
-                                        │ WebSocket + REST
-                                        ▼
-                                 ┌──────────────┐
-                                 │   Next.js     │
-                                 │   Frontend    │
-                                 │  (port 3000)  │
-                                 │              │
-                                 │ MapLibre GL   │
-                                 │ Three.js      │
-                                 │ Recharts      │
-                                 └──────────────┘
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│  Simulator   │     │     Spark    │     │   FastAPI    │
+│  (port 8001) │     │  Processor   │     │  (port 8000) │
+│  CSV → Kafka │     │ Kafka→LSTM→  │     │  Kafka→WS    │
+│   producer   │     │   Kafka      │     │  consumer    │
+└──────┬───────┘     └──────┬───────┘     └──────┬───────┘
+       │                    │                    │
+       │   flux_data        │  traffic_preds     │  traffic_preds
+       ▼                    ▼                    ▼
+┌──────────────────────────────────────────────────────┐
+│                   Kafka Broker                       │
+│              (local or Aiven Cloud)                  │
+│         flux_data / traffic_predictions topics        │
+└──────────────────────┬───────────────────────────────┘
+                       │
+┌──────────────────────┴───────────────────────────────┐
+│                  Zookeeper (local)                    │
+└──────────────────────────────────────────────────────┘
+                       │
+                       │ WebSocket (predictions)
+                       ▼
+┌──────────────────────────────────────────────────────┐
+│               Next.js Frontend (port 3000)            │
+│       MapLibre GL + Three.js + Recharts Dashboard     │
+└──────────────────────────────────────────────────────┘
 ```
 
 ### Data Pipeline (complete flow)
@@ -471,6 +444,12 @@ The car follows the real road geometry coordinates along the optimal path. Re-ro
 
 ### 7.1 Prerequisites
 
+**With Docker (recommended):**
+```bash
+Docker + Docker Compose v2   # Only requirements!
+```
+
+**Without Docker (manual setup):**
 ```bash
 Java 17+      # For Apache Spark
 Python 3.12+  # Backend services
@@ -536,14 +515,31 @@ SPARK_HOME=/home/jojo/tools/spark
 
 ### 7.5 Running
 
-#### Option A: Docker (one command)
+#### Option A: Docker (one command — RECOMMENDED)
 
 ```bash
-./docker-up.sh          # Frontend + API
-./docker-up.sh --full   # Full stack: Frontend + API + Spark + Simulator
+# Full stack: Frontend + API + Kafka + Spark + Simulator
+docker compose --profile full up --build
+
+# Minimal: Frontend + API + Kafka
+docker compose up --build
 ```
 
-#### Option B: Manual
+This starts (Docker services):
+1. Zookeeper (service discovery for Kafka)
+2. Kafka Broker (local, no credentials needed)
+3. FastAPI Gateway on port 8000 (waits for Kafka health)
+4. Simulator on port 8001 — reads CSV → publishes to Kafka `flux_data`
+5. Spark Processor — consumes `flux_data`, runs LSTM inference, publishes to `traffic_predictions`
+6. Frontend on port 3000 — connects to API via WebSocket
+
+**Using Aiven Cloud Kafka** (optional):
+```bash
+# Edit .env.aiven with your credentials, then:
+docker compose --env-file .env --env-file .env.aiven --profile full up --build
+```
+
+#### Option B: Manual (development)
 
 **Terminal 1 — Backend services:**
 ```bash
