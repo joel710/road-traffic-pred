@@ -5,11 +5,19 @@
 
 set -e
 
+# ─── Env Setup ──────────────────────────────────────────────────
+if [ ! -f .env ]; then
+  echo "📝 .env file not found. Creating from .env.example..."
+  cp .env.example .env
+  echo "✅ .env created. You can edit it if you want to use Aiven Kafka."
+fi
+
 COMPOSE_ARGS="up --build -d"
+
 
 if [ "$1" = "--full" ]; then
   echo "🚀 Launching FULL stack: Frontend + API + Spark + Simulator"
-  docker compose $COMPOSE_ARGS --profile full
+  docker compose --profile full $COMPOSE_ARGS
 else
   echo "🚀 Launching: Frontend + API (use --full for Spark + Simulator)"
   docker compose $COMPOSE_ARGS
