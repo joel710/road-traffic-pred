@@ -17,5 +17,5 @@ COPY spark_processor.py traffic_gnn.py ./
 
 ENTRYPOINT []
 CMD ["spark-submit", "--master", "local[*]", \
-     "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4", \
+     "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3", \
      "spark_processor.py"]
