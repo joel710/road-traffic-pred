@@ -23,13 +23,13 @@ Depending on your needs, choose one of the following commands:
 **A. Full Stack (Recommended)**
 Launches the Frontend, API, Kafka Broker, Spark Processor, and the Traffic Simulator.
 ```bash
-docker compose --profile full up --build
+./docker-up.sh --full
 ```
 
 **B. Minimal Stack**
 Launches only the Frontend, API, and Kafka (no data simulation or ML processing).
 ```bash
-docker compose up --build
+./docker-up.sh
 ```
 
 ### 4. Access the Application
@@ -77,12 +77,18 @@ For developers who want to run services natively:
 
 ---
 
-## 📖 Project Details
+## 📖 Project Documentation
 
-### System Architecture
-**Data Flow**: `CSV` $\rightarrow$ `Simulator` $\rightarrow$ `Kafka (flux_data)` $\rightarrow$ `Spark (LSTM Inference)` $\rightarrow$ `Kafka (traffic_predictions)` $\rightarrow$ `FastAPI` $\rightarrow$ `WebSocket` $\rightarrow$ `Next.js Map`.
+For a comprehensive understanding of the system, please refer to the dedicated technical guides:
 
-Detailed design can be found in [ARCHITECTURE.md](./ARCHITECTURE.md).
+- ⚙️ **[Backend Architecture](./docs/BACKEND.md)**: Deep dive into the data pipeline, Kafka, Spark, and the Gateway API.
+- 🎨 **[Frontend Architecture](./docs/FRONTEND.md)**: Details on the 3D visualization engine, Next.js state, and MapLibre integration.
+- 🔄 **[System Integration](./docs/INTEGRATION.md)**: The full data flow map from raw CSV to real-time 3D animation.
+- 🏛️ **[General Architecture](./ARCHITECTURE.md)**: High-level system design.
+
+---
+
+## 🛠 Project Details
 
 ### Project Structure
 ```text
