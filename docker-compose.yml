@@ -42,6 +42,7 @@ services:
 
   # ─── Frontend (Next.js) ─────────────────────────────────────
   frontend:
+    image: road-traffic-pred-frontend
     build:
       context: .
       dockerfile: Dockerfile
@@ -64,6 +65,7 @@ services:
 
   # ─── Backend Gateway API (FastAPI) ───────────────────────────
   backend:
+    image: road-traffic-pred-backend
     build:
       context: ./mini-services/api
     ports:
@@ -87,6 +89,7 @@ services:
 
   # ─── Traffic Simulator ───────────────────────────────────────
   simulator:
+    image: road-traffic-pred-simulator
     build:
       context: ./mini-services/simulator
     ports:
@@ -110,6 +113,7 @@ services:
 
   # ─── Spark Processor ─────────────────────────────────────────
   spark-processor:
+    image: road-traffic-pred-spark-processor
     build:
       context: ./mini-services/spark
     command: >

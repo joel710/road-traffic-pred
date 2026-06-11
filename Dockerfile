@@ -3,7 +3,7 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN NODE_OPTIONS="--max-old-space-size=4096" npm ci --omit=optional
+RUN NODE_OPTIONS="--max-old-space-size=4096" npm install
 
 COPY . .
 
@@ -13,7 +13,8 @@ ARG NEXT_PUBLIC_SIMULATOR_URL=http://localhost:8001
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_SIMULATOR_URL=$NEXT_PUBLIC_SIMULATOR_URL
 
-RUN npm run build
+RUN NODE_OPTIONS="--max-old-space-size=4096" npx next build
+RUN cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/
 
 # Production image
 FROM node:20-alpine AS runner
