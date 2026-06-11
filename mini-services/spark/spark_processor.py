@@ -1,21 +1,38 @@
+"""
+Spark Structured Streaming job: Kafka → GNN inference → Kafka.
+
+Consumes traffic data from Kafka with pre-computed features,
+runs TrafficGNN inference (4 junctions, 24-step windows),
+and publishes predictions to the output topic.
+
+Features (ALL raw — no standardisation, pre-computed in source data):
+  hour_sin, hour_cos, dow_sin, dow_cos, month_sin, month_cos,
+  is_weekend,
+  veh_lag_1, veh_lag_2, veh_lag_3, veh_lag_24,
+  veh_ma_6, veh_ma_24,
+  veh_diff_1
+"""
+
 import os
 import sys
 import time
 import json
 import torch
-import torch.nn as nn
 import numpy as np
-import joblib
 from collections import deque, defaultdict
 from pathlib import Path
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, from_json, to_json, struct
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType, FloatType
+from pyspark.sql.functions import col, from_json
+from pyspark.sql.types import (
+    StructType, StructField, StringType, IntegerType, FloatType,
+)
 from kafka import KafkaProducer
 from kafka.errors import NoBrokersAvailable
 from datetime import datetime, timezone
 
-# ─── Aiven Kafka Configuration ───────────────────────────────────
+from traffic_gnn import TrafficGNN
+
+# ─── Config ───────────────────────────────────────────────────────
 KAFKA_HOST = os.getenv("KAFKA_HOST", "localhost")
 KAFKA_PORT = int(os.getenv("KAFKA_PORT", "9092"))
 KAFKA_USERNAME = os.getenv("KAFKA_USERNAME", "")
@@ -23,205 +40,197 @@ KAFKA_PASSWORD = os.getenv("KAFKA_PASSWORD", "")
 KAFKA_SSL_CA = os.getenv("KAFKA_SSL_CA", "")
 KAFKA_SSL_CERT = os.getenv("KAFKA_SSL_CERT", "")
 KAFKA_SSL_KEY = os.getenv("KAFKA_SSL_KEY", "")
-TOPIC_INPUT = os.getenv("KAFKA_TOPIC_INPUT", "traffic_stream")
+TOPIC_INPUT = os.getenv("KAFKA_TOPIC_INPUT", "flux_data")
 TOPIC_OUTPUT = os.getenv("KAFKA_TOPIC_OUTPUT", "traffic_predictions")
-MODEL_PATH = os.getenv("MODEL_PATH", "models/global_model.pt")
+MODEL_PATH = os.getenv("MODEL_PATH", "models/gnn_model.pth")
 BOOTSTRAP_SERVER = f"{KAFKA_HOST}:{KAFKA_PORT}"
+
+NUM_NODES = 4
+SEQ_LEN = 24
+NUM_FEATURES = 14
+
+FEATURE_COLS = [
+    "hour_sin", "hour_cos",
+    "dow_sin", "dow_cos",
+    "month_sin", "month_cos",
+    "is_weekend",
+    "veh_lag_1", "veh_lag_2", "veh_lag_3", "veh_lag_24",
+    "veh_ma_6", "veh_ma_24",
+    "veh_diff_1",
+]
+
+# ─── State ────────────────────────────────────────────────────────
+feat_window: dict[int, deque] = defaultdict(lambda: deque(maxlen=SEQ_LEN))
+latest_row: dict[int, dict] = {}
 
 
 def build_kafka_producer() -> KafkaProducer:
-    """KafkaProducer with SSL client certs (Aiven mTLS) or plaintext fallback."""
     opts = {
         "bootstrap_servers": [BOOTSTRAP_SERVER],
         "value_serializer": lambda x: json.dumps(x).encode("utf-8"),
         "acks": "all",
         "retries": 5,
     }
-    # Prefer SSL with client certificates (Aiven mTLS)
     if KAFKA_SSL_CA and KAFKA_SSL_CERT and KAFKA_SSL_KEY \
        and Path(KAFKA_SSL_CA).exists() and Path(KAFKA_SSL_CERT).exists() and Path(KAFKA_SSL_KEY).exists():
-        opts.update(
-            security_protocol="SSL",
-            ssl_cafile=KAFKA_SSL_CA,
-            ssl_certfile=KAFKA_SSL_CERT,
-            ssl_keyfile=KAFKA_SSL_KEY,
-        )
-    # Fallback to SASL_SSL if only username/password are provided
+        opts.update(security_protocol="SSL", ssl_cafile=KAFKA_SSL_CA,
+                    ssl_certfile=KAFKA_SSL_CERT, ssl_keyfile=KAFKA_SSL_KEY)
     elif KAFKA_USERNAME and KAFKA_PASSWORD:
-        opts.update(
-            security_protocol="SASL_SSL",
-            sasl_mechanism="PLAIN",
-            sasl_plain_username=KAFKA_USERNAME,
-            sasl_plain_password=KAFKA_PASSWORD,
-        )
+        opts.update(security_protocol="SASL_SSL", sasl_mechanism="PLAIN",
+                    sasl_plain_username=KAFKA_USERNAME, sasl_plain_password=KAFKA_PASSWORD)
         if KAFKA_SSL_CA and Path(KAFKA_SSL_CA).exists():
             opts["ssl_cafile"] = KAFKA_SSL_CA
     return KafkaProducer(**opts)
 
 
-# ─── LSTM Model Definition ───────────────────────────────────────
-class TrafficLSTM(nn.Module):
-    def __init__(self, input_size=9, hidden_size=128, num_layers=2):
-        super().__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=0.3)
-        self.batch_norm = nn.BatchNorm1d(hidden_size)
-        self.fc = nn.Sequential(
-            nn.Linear(hidden_size, 64),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(64, 1)
-        )
-
-    def forward(self, x):
-        out, _ = self.lstm(x)
-        out = out[:, -1, :]
-        out = self.batch_norm(out)
-        out = self.fc(out)
-        return out
-
-
+# ─── Model ────────────────────────────────────────────────────────
 device = torch.device("cpu")
-model = TrafficLSTM()
+model = TrafficGNN(num_nodes=NUM_NODES, in_features=NUM_FEATURES)
 try:
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
-    model.eval()
-    print("✅ PyTorch LSTM model loaded.")
+    model.load_pretrained(MODEL_PATH, map_location=device)
 except Exception as e:
-    print(f"❌ Error loading model: {e}")
+    print(f"❌ Error loading GNN model: {e}")
+    sys.exit(1)
 
-# ─── Load Scalers (fitted on training data) ────────────────────────
-SCALER_X_PATH = os.getenv("SCALER_X_PATH", "models/scaler_x.pkl")
-SCALER_Y_PATH = os.getenv("SCALER_Y_PATH", "models/scaler_y.pkl")
-try:
-    scaler_x = joblib.load(SCALER_X_PATH)
-    scaler_y = joblib.load(SCALER_Y_PATH)
-    print(f"✅ Scalers loaded (y: mean={scaler_y.mean_[0]:.1f}, scale={scaler_y.scale_[0]:.1f})")
-except Exception as e:
-    print(f"❌ Error loading scalers: {e}")
-    scaler_x = None
-    scaler_y = None
 
-# ─── Per-junction sliding window buffer (24 time steps) ─────────────
-FEATURE_COLS = [
-    "hour_sin", "hour_cos", "dayofweek", "month", "is_weekend",
-    "veh_lag_1", "veh_lag_2", "veh_lag_3", "veh_lag_24",
-]
-SEQ_LEN = 24
-junction_buffer: dict[int, deque] = defaultdict(lambda: deque(maxlen=SEQ_LEN))
+FEATURE_COLS_SET = set(FEATURE_COLS)
 
-# ─── Spark Session (local[*]) ────────────────────────────────────
+
+def extract_14_features(row_dict: dict) -> np.ndarray:
+    """Extract the 14 pre-computed feature values from a row dict."""
+    return np.array([float(row_dict.get(c, 0)) for c in FEATURE_COLS], dtype=np.float32)
+
+
+@torch.no_grad()
+def predict_all_junctions() -> dict[int, float] | None:
+    """Run GNN on all 4 junctions. Returns {jid: pred} or None if warming up."""
+    for j in range(1, NUM_NODES + 1):
+        if len(feat_window[j]) < SEQ_LEN:
+            return None
+
+    sequences = np.stack([
+        np.array(list(feat_window[j])) for j in range(1, NUM_NODES + 1)
+    ], axis=0)  # (4, 24, 14)
+
+    x = torch.tensor(sequences, dtype=torch.float32).unsqueeze(0)  # (1, 4, 24, 14)
+    out = model(x).squeeze(0)  # (4, 1)
+
+    return {
+        jid: max(0.0, round(float(out[i, 0]), 2))
+        for i, jid in enumerate(range(1, NUM_NODES + 1))
+    }
+
+
+# ─── Spark ────────────────────────────────────────────────────────
 spark = SparkSession.builder \
-    .appName("TrafficPredictionStreaming") \
+    .appName("TrafficGNNStreaming") \
     .master("local[*]") \
     .getOrCreate()
-
 spark.sparkContext.setLogLevel("WARN")
 
-# Input schema (matches simulator CSV payload)
+# Schema matching the refined dataset (all columns in test_gnn.csv)
 input_schema = StructType([
     StructField("DateTime", StringType(), True),
     StructField("Junction", IntegerType(), True),
     StructField("Vehicles", IntegerType(), True),
-    StructField("hour_sin", FloatType(), True),
-    StructField("hour_cos", FloatType(), True),
+    StructField("ID", IntegerType(), True),
+    StructField("is_weekend", IntegerType(), True),
+    StructField("hour", IntegerType(), True),
     StructField("dayofweek", IntegerType(), True),
     StructField("month", IntegerType(), True),
-    StructField("is_weekend", IntegerType(), True),
+    StructField("hour_sin", FloatType(), True),
+    StructField("hour_cos", FloatType(), True),
+    StructField("dow_sin", FloatType(), True),
+    StructField("dow_cos", FloatType(), True),
+    StructField("month_sin", FloatType(), True),
+    StructField("month_cos", FloatType(), True),
     StructField("veh_lag_1", FloatType(), True),
     StructField("veh_lag_2", FloatType(), True),
     StructField("veh_lag_3", FloatType(), True),
     StructField("veh_lag_24", FloatType(), True),
+    StructField("veh_ma_6", FloatType(), True),
+    StructField("veh_ma_24", FloatType(), True),
+    StructField("veh_diff_1", FloatType(), True),
 ])
 
-# ─── Kafka Producer for Output ───────────────────────────────────
+
+# ─── Kafka Producer ───────────────────────────────────────────────
 print(f"📤 Connecting output producer to {BOOTSTRAP_SERVER} …")
 
+
 def wait_for_kafka(retries=30, delay=2):
-    """Block until Kafka broker is reachable, with retries."""
     for attempt in range(retries):
         try:
-            producer = build_kafka_producer()
-            producer.close(timeout=5)
+            p = build_kafka_producer()
+            p.close(timeout=5)
             print("✅ Kafka broker reachable")
             return True
         except NoBrokersAvailable:
-            print(f"⏳ Waiting for Kafka broker... ({attempt + 1}/{retries})")
+            print(f"⏳ Waiting for Kafka... ({attempt + 1}/{retries})")
             time.sleep(delay)
         except Exception as e:
             print(f"⏳ Kafka not ready: {e} ({attempt + 1}/{retries})")
             time.sleep(delay)
-    print("❌ Kafka broker not available after timeout")
+    print("❌ Kafka broker not available")
     return False
 
+
 if not wait_for_kafka():
-    print("❌ Exiting: Kafka is required for the streaming pipeline.")
+    print("❌ Exiting: Kafka is required.")
     sys.exit(1)
 
 output_producer = build_kafka_producer()
 
 
-def predict_and_publish(batch_df, batch_id):
-    """Stateful LSTM inference with 24-step sequences and scaler normalization."""
-    row_count = batch_df.count()
-    if row_count == 0:
+# ─── Streaming inference ─────────────────────────────────────────
+def process_microbatch(batch_df, batch_id):
+    """Consume a Spark micro-batch, update GNN windows, publish predictions."""
+    global latest_row
+
+    rows = batch_df.collect()
+    if not rows:
         return
 
-    pdf = batch_df.toPandas()
-    pdf[FEATURE_COLS] = pdf[FEATURE_COLS].fillna(0.0)
-    pdf["Vehicles"] = pdf["Vehicles"].fillna(0)
+    for row in rows:
+        j = int(row["Junction"])
+        if j < 1 or j > NUM_NODES:
+            continue
 
-    # Sort by DateTime to maintain temporal order per junction
-    pdf = pdf.sort_values("DateTime")
+        # Build raw dict from all columns
+        d = {fn: row[fn] for fn in row.__fields__}
+        d["DateTime"] = str(d["DateTime"])
+        latest_row[j] = d
+
+        # Extract pre-computed 14-feature vector
+        feat_window[j].append(extract_14_features(d))
+
+    all_preds = predict_all_junctions()
+    if all_preds is None:
+        return
 
     published = 0
     sample_log = None
 
-    for _, row in pdf.iterrows():
-        junction = int(row["Junction"])
-        vehicles = int(row["Vehicles"])
-
-        # Append features to this junction's sliding window
-        features_raw = np.array([float(row[c]) for c in FEATURE_COLS], dtype=np.float32)
-        junction_buffer[junction].append(features_raw)
-
-        if len(junction_buffer[junction]) < SEQ_LEN:
-            continue  # Not enough history yet
-
-        # Build sequence (24, 9) → normalize → predict → denormalize
-        seq_raw = np.array(list(junction_buffer[junction]))  # (24, 9)
-        if scaler_x is not None:
-            seq_scaled = scaler_x.transform(seq_raw)
-        else:
-            seq_scaled = seq_raw
-
-        seq_tensor = torch.tensor(seq_scaled, dtype=torch.float32).unsqueeze(0)  # (1, 24, 9)
-
-        with torch.no_grad():
-            pred_scaled = model(seq_tensor).item()
-
-        if scaler_y is not None:
-            pred_val = max(0.0, round(float(scaler_y.inverse_transform([[pred_scaled]])[0, 0]), 2))
-        else:
-            pred_val = max(0.0, round(float(pred_scaled), 2))
-
+    for jid, pred_val in all_preds.items():
+        raw = latest_row.get(jid, {})
+        real_vehicles = int(raw.get("Vehicles", 0))
         status = "fluid" if pred_val < 30 else "moderate" if pred_val < 60 else "congested"
 
         result = {
-            "DateTime": str(row["DateTime"]),
-            "Junction": junction,
-            "Vehicles": vehicles,
+            "DateTime": raw.get("DateTime", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")),
+            "Junction": jid,
+            "Vehicles": real_vehicles,
             "PredictedVehicles": pred_val,
             "Status": status,
             "Timestamp": datetime.now(timezone.utc).isoformat(),
         }
-
         try:
             output_producer.send(TOPIC_OUTPUT, value=result)
             published += 1
             if sample_log is None:
-                sample_log = f"   Sample: J{junction} | Actual={vehicles} veh | Pred={pred_val} veh | Status={status}"
+                sample_log = f"   Sample: J{jid} | Actual={real_vehicles} veh | Pred={pred_val} veh | Status={status}"
         except Exception as e:
-            print(f"⚠️ Failed to publish prediction to Kafka: {e}")
+            print(f"⚠️ Failed to publish prediction: {e}")
 
     if published > 0:
         print(f"🔮 Published {published} predictions to topic '{TOPIC_OUTPUT}'.")
@@ -229,7 +238,7 @@ def predict_and_publish(batch_df, batch_id):
             print(sample_log)
 
 
-# ─── Kafka Input Stream ──────────────────────────────────────────
+# ─── Kafka Stream ─────────────────────────────────────────────────
 print(f"📥 Reading from Kafka topic '{TOPIC_INPUT}' at {BOOTSTRAP_SERVER} …")
 
 kafka_read_opts = {
@@ -239,22 +248,15 @@ kafka_read_opts = {
     "failOnDataLoss": "false",
 }
 
-# Add SSL config for Aiven if needed
-# Prefer SSL with client certificates (Aiven mTLS, PEM-based)
 if KAFKA_SSL_CA and KAFKA_SSL_CERT and KAFKA_SSL_KEY \
    and Path(KAFKA_SSL_CA).exists() and Path(KAFKA_SSL_CERT).exists() and Path(KAFKA_SSL_KEY).exists():
-    # Java Kafka client expects private key in the keystore PEM file.
-    # Combine key + cert into a single PEM so the JVM can load both.
-    _combined_keystore = Path("/tmp/kafka_keystore_combined.pem")
-    _combined_keystore.write_text(
-        Path(KAFKA_SSL_KEY).read_text() + Path(KAFKA_SSL_CERT).read_text()
-    )
-    kafka_read_opts["kafka.security.protocol"] = "SSL"
-    kafka_read_opts["kafka.ssl.truststore.location"] = KAFKA_SSL_CA
-    kafka_read_opts["kafka.ssl.truststore.type"] = "PEM"
-    kafka_read_opts["kafka.ssl.keystore.location"] = str(_combined_keystore)
-    kafka_read_opts["kafka.ssl.keystore.type"] = "PEM"
-# Fallback to SASL_SSL if only username/password are provided
+    _combined = Path("/tmp/kafka_keystore_combined.pem")
+    _combined.write_text(Path(KAFKA_SSL_KEY).read_text() + Path(KAFKA_SSL_CERT).read_text())
+    kafka_read_opts.update(kafka_security_protocol="SSL",
+                           kafka_ssl_truststore_location=KAFKA_SSL_CA,
+                           kafka_ssl_truststore_type="PEM",
+                           kafka_ssl_keystore_location=str(_combined),
+                           kafka_ssl_keystore_type="PEM")
 elif KAFKA_USERNAME and KAFKA_PASSWORD:
     kafka_read_opts["kafka.security.protocol"] = "SASL_SSL"
     kafka_read_opts["kafka.sasl.mechanism"] = "PLAIN"
@@ -275,8 +277,8 @@ json_df = df.selectExpr("CAST(value AS STRING)") \
     .select("data.*")
 
 query = json_df.writeStream \
-    .foreachBatch(predict_and_publish) \
+    .foreachBatch(process_microbatch) \
     .start()
 
-print("🚀 Spark Streaming Job is running (Kafka → LSTM → Kafka) …")
+print("🚀 Spark Streaming (GNN) — Kafka → GNN → Kafka")
 query.awaitTermination()

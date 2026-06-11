@@ -1,20 +1,21 @@
-FROM bitnamilegacy/spark:latest
+FROM python:3.11-slim
 
-USER root
+# Install Java (required for PySpark)
 RUN apt-get update && apt-get install -y \
-    gcc python3-pip \
+    openjdk-21-jre \
     && rm -rf /var/lib/apt/lists/*
 
-# Use requirements.txt for reproducible dependency versions
+# Install Python dependencies (includes pyspark + torch)
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 ENV PYSPARK_PYTHON=python3
 ENV PYSPARK_DRIVER_PYTHON=python3
 
 WORKDIR /app
-COPY spark_processor.py .
+COPY spark_processor.py traffic_gnn.py ./
 
+ENTRYPOINT []
 CMD ["spark-submit", "--master", "local[*]", \
-     "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0", \
+     "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4", \
      "spark_processor.py"]

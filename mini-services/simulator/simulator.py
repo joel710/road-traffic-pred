@@ -151,5 +151,10 @@ async def stop_simulation():
 async def get_status():
     return {"is_running": simulator.is_running}
 
+@app.on_event("startup")
+async def auto_start_simulation():
+    """Auto-start the simulation when the container boots (one-command deploy)."""
+    asyncio.create_task(simulator.run())
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001)

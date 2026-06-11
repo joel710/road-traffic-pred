@@ -2,9 +2,9 @@
 
 Road Flow is a high-performance traffic prediction system combining Deep Learning (LSTM), Distributed Streaming (Apache Kafka & Spark), and a modern 3D Interactive Dashboard.
 
-## 🚀 Quick Start (Step-by-Step)
+## 🚀 Quick Start (Single Command — Docker)
 
-Since you have Docker and Docker Compose v2 installed, you can launch the entire infrastructure in minutes.
+Since you have Docker and Docker Compose v2 installed, you can launch the entire infrastructure with **one command**:
 
 ### 1. Clone the Repository
 ```bash
@@ -12,24 +12,37 @@ git clone <repo-url> && cd road-traffic-pred
 ```
 
 ### 2. Setup Environment
-Prepare the configuration file required by the backend services:
 ```bash
 cp .env.example .env
 ```
 
-### 3. Launch the System
-Depending on your needs, choose one of the following commands:
-
-**A. Full Stack (Recommended)**
-Launches the Frontend, API, Kafka Broker, Spark Processor, and the Traffic Simulator.
+### 3. Launch Everything
+**Full stack** (Frontend + API + Kafka + Spark + Simulator):
 ```bash
-./docker-up.sh --full
+make up
 ```
 
-**B. Minimal Stack**
-Launches only the Frontend, API, and Kafka (no data simulation or ML processing).
+**Minimal stack** (Frontend + API + Kafka only — no ML/simulation):
 ```bash
-./docker-up.sh
+make up-core
+```
+
+> The first build takes a few minutes (Node.js, PyTorch, Spark deps). Subsequent launches reuse cached images.
+
+### 4. Open the Dashboard
+```bash
+# Open in your browser:
+http://localhost:3000/dashboard
+```
+
+The simulator auto-starts and publishes traffic data to Kafka. Spark processes it with LSTM, and the dashboard updates in real-time via WebSocket.
+
+### Managing the Stack
+```bash
+make logs   # Follow all logs
+make ps     # Container status
+make down   # Stop everything
+make rebuild  # Rebuild from scratch and restart
 ```
 
 ### 4. Access the Application
