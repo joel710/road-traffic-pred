@@ -1,9 +1,9 @@
 # Frontend — Next.js standalone build
-FROM node:22-alpine AS builder
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=optional
+RUN NODE_OPTIONS="--max-old-space-size=4096" npm ci --omit=optional
 
 COPY . .
 
@@ -16,7 +16,7 @@ ENV NEXT_PUBLIC_SIMULATOR_URL=$NEXT_PUBLIC_SIMULATOR_URL
 RUN npm run build
 
 # Production image
-FROM node:22-alpine AS runner
+FROM node:20-alpine AS runner
 
 WORKDIR /app
 ENV NODE_ENV=production
