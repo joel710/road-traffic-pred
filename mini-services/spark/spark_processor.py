@@ -164,7 +164,7 @@ def predict_all_junctions() -> dict[int, float] | None:
 spark = SparkSession.builder \
     .appName("TrafficGNNStreaming") \
     .config("spark.sql.streaming.checkpointLocation", "/tmp/spark-checkpoints") \
-    .get_session()
+    .getOrCreate()
 
 spark.sparkContext.setLogLevel("WARN")
 

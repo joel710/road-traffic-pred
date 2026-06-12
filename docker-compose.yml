@@ -12,6 +12,7 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
+      - HOSTNAME=0.0.0.0
     depends_on:
       - backend
     healthcheck:
@@ -29,11 +30,14 @@ services:
       context: ./mini-services/api
     ports:
       - "8000:8000"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     env_file:
       - .env
     environment:
-      - KAFKA_HOST=${KAFKA_HOST:-localhost}
-      - KAFKA_PORT=${KAFKA_PORT:-9092}
+      - KAFKA_HOST=road-traffic-pred-kafka-1
+      - KAFKA_PORT=9092
       - KAFKA_SSL_CA=${KAFKA_SSL_CA}
       - KAFKA_SSL_CERT=${KAFKA_SSL_CERT}
       - KAFKA_SSL_KEY=${KAFKA_SSL_KEY}
@@ -54,11 +58,14 @@ services:
       context: ./mini-services/simulator
     ports:
       - "8001:8001"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     env_file:
       - .env
     environment:
-      - KAFKA_HOST=${KAFKA_HOST:-localhost}
-      - KAFKA_PORT=${KAFKA_PORT:-9092}
+      - KAFKA_HOST=road-traffic-pred-kafka-1
+      - KAFKA_PORT=9092
       - KAFKA_SSL_CA=${KAFKA_SSL_CA}
       - KAFKA_SSL_CERT=${KAFKA_SSL_CERT}
       - KAFKA_SSL_KEY=${KAFKA_SSL_KEY}
@@ -85,8 +92,8 @@ services:
     env_file:
       - .env
     environment:
-      - KAFKA_HOST=${KAFKA_HOST:-localhost}
-      - KAFKA_PORT=${KAFKA_PORT:-9092}
+      - KAFKA_HOST=road-traffic-pred-kafka-1
+      - KAFKA_PORT=9092
       - KAFKA_SSL_CA=${KAFKA_SSL_CA}
       - KAFKA_SSL_CERT=${KAFKA_SSL_CERT}
       - KAFKA_SSL_KEY=${KAFKA_SSL_KEY}
