@@ -2,7 +2,7 @@
 # 🔍 Pre-Flight Checklist - Road Flow v1.0
 # Exécutez ce script pour vérifier que tout est prêt
 
-set -e
+set +e
 
 PROJECT_DIR="/home/jojo/road-traffic-pred"
 SPARK_HOME="/home/jojo/tools/spark"
@@ -25,8 +25,9 @@ PASSED=0
 
 # Function to check
 check() {
+  local exit_status=$?
   TOTAL=$((TOTAL + 1))
-  if [ $? -eq 0 ]; then
+  if [ $exit_status -eq 0 ]; then
     echo -e "${GREEN}✓ $1${NC}"
     PASSED=$((PASSED + 1))
   else
@@ -117,7 +118,7 @@ check "Pandas installed"
 echo ""
 echo -e "${YELLOW}⚙️  Configuration:${NC}"
 
-[ -n "$(grep KAFKA_HOST=$PROJECT_DIR/.env)" ] 2>/dev/null || grep "KAFKA_HOST=" "$PROJECT_DIR/.env" > /dev/null 2>&1
+grep "KAFKA_HOST=" "$PROJECT_DIR/.env" > /dev/null 2>&1
 check ".env has KAFKA_HOST"
 
 [ -n "$(grep 'KAFKA_PASSWORD' "$PROJECT_DIR/.env" | grep -v '^#' | grep -v 'YOUR_PASSWORD')" ] 2>/dev/null

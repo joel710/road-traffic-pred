@@ -2,6 +2,7 @@ import pandas as pd
 import os
 import json
 import time
+import ssl
 from pathlib import Path
 from kafka import KafkaProducer
 from dotenv import load_dotenv
@@ -13,9 +14,25 @@ KAFKA_HOST = os.getenv("KAFKA_HOST", "localhost")
 KAFKA_PORT = int(os.getenv("KAFKA_PORT", "9092"))
 KAFKA_USERNAME = os.getenv("KAFKA_USERNAME", "")
 KAFKA_PASSWORD = os.getenv("KAFKA_PASSWORD", "")
-KAFKA_SSL_CA = os.getenv("KAFKA_SSL_CA", "")
-KAFKA_SSL_CERT = os.getenv("KAFKA_SSL_CERT", "")
-KAFKA_SSL_KEY = os.getenv("KAFKA_SSL_KEY", "")
+def resolve_path(p: str) -> str:
+    """Resolve path relative to project root or current directory."""
+    if not p: return ""
+    path_obj = Path(p)
+    if path_obj.exists():
+        return str(path_obj.absolute())
+    # Try relative to parent if we are in mini-services/...
+    parent_path = Path("..") / Path("..") / path_obj
+    if parent_path.exists():
+        return str(parent_path.absolute())
+    # Try one level up
+    one_up = Path("..") / path_obj
+    if one_up.exists():
+        return str(one_up.absolute())
+    return p
+
+KAFKA_SSL_CA = resolve_path(os.getenv("KAFKA_SSL_CA", ""))
+KAFKA_SSL_CERT = resolve_path(os.getenv("KAFKA_SSL_CERT", ""))
+KAFKA_SSL_KEY = resolve_path(os.getenv("KAFKA_SSL_KEY", ""))
 KAFKA_TOPIC_INPUT = os.getenv("KAFKA_TOPIC_INPUT", "flux_data")
 DATA_PATH = os.getenv("CSV_PATH", "../data/test.csv")
 STREAM_DELAY = float(os.getenv("STREAM_DELAY", "1.0"))
@@ -29,15 +46,20 @@ def build_kafka_producer() -> KafkaProducer:
         "value_serializer": lambda x: json.dumps(x).encode("utf-8"),
         "acks": "all",
         "retries": 5,
+        "api_version": (2, 8, 0),
     }
     # Prefer SSL with client certificates (Aiven mTLS)
     if KAFKA_SSL_CA and KAFKA_SSL_CERT and KAFKA_SSL_KEY \
        and Path(KAFKA_SSL_CA).exists() and Path(KAFKA_SSL_CERT).exists() and Path(KAFKA_SSL_KEY).exists():
+        
+        context = ssl.create_default_context(cafile=KAFKA_SSL_CA)
+        context.load_cert_chain(certfile=KAFKA_SSL_CERT, keyfile=KAFKA_SSL_KEY)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+
         opts.update(
             security_protocol="SSL",
-            ssl_cafile=KAFKA_SSL_CA,
-            ssl_certfile=KAFKA_SSL_CERT,
-            ssl_keyfile=KAFKA_SSL_KEY,
+            ssl_context=context,
         )
     # Fallback to SASL_SSL if only username/password are provided
     elif KAFKA_USERNAME and KAFKA_PASSWORD:
