@@ -17,7 +17,7 @@ Le cycle commence par l'ingestion de données historiques. Le simulateur transfo
 ### 2. Traitement et Inférence (Apache Spark)
 Spark agit comme l'unité de calcul distribué. Il ne se contente pas de transmettre la donnée, il lui ajoute une valeur prédictive.
 - **Agrégation** : Spark consomme le flux `flux_data` et regroupe les données par `JunctionID` sur une fenêtre temporelle glissante.
-- **Analyse** : Le vecteur de données est passé au modèle LSTM (Long Short-Term Memory) qui analyse la saisonnalité et la tendance.
+- **Analyse** : Le vecteur de données (14 features) est passé au modèle **TrafficGNN** (Graph Neural Network avec GCNConv) qui analyse la saisonnalité, la tendance et les relations spatiales entre les 4 junctions.
 - **Résultat** : Une prédiction numérique est générée et produite vers le topic `traffic_predictions`.
 
 ### 3. Pont de Communication (FastAPI Gateway)
@@ -76,13 +76,15 @@ Ce message représente une mesure brute prise par un capteur.
 ```
 
 ### Événement de Prédiction (Topic: `traffic_predictions`)
-Ce message représente le résultat de l'inférence du modèle LSTM.
+Ce message représente le résultat de l'inférence du modèle TrafficGNN.
 ```json
 {
+  "DateTime": "2017-03-11 09:00:00",
   "Junction": 1,
-  "Prediction": 14.5,
-  "Timestamp": "2026-06-10T10:00:00Z",
-  "Confidence": 0.92
+  "Vehicles": 42,
+  "PredictedVehicles": 38.5,
+  "Status": "moderate",
+  "Timestamp": "2026-06-12T14:00:00+00:00"
 }
 ```
 

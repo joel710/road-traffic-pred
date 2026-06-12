@@ -21,10 +21,11 @@ Kafka sert de colonne vertébrale au système, assurant le découplage total ent
 
 ### 3. Processeur de Streaming : Apache Spark (`mini-services/spark`)
 Le "cerveau" analytique du système, effectuant l'inférence ML en temps réel.
-- **Modèle Prédictif** : Utilisation d'un réseau de neurones récurrents (LSTM) implémenté via PyTorch (`global_model.pt`) et normalisé par des scalers Scikit-Learn (`scaler_x.pkl`, `scaler_y.pkl`).
+- **Modèle Prédictif** : Utilisation d'un **GNN (Graph Neural Network)** — `TrafficGNN` — implémenté via PyTorch (`gnn_model.pth`, 102k paramètres) avec normalisation par scaler Scikit-Learn (`scaler_y.pkl`).
 - **Logique de Traitement** :
-  - **Fenêtrage (Windowing)** : Spark agrège une fenêtre glissante des données récentes par intersection.
-  - **Inférence** : Le modèle prédit le flux futur en fonction des tendances temporelles capturées dans la fenêtre.
+  - **Fenêtrage (Windowing)** : Spark agrège une fenêtre glissante de 24 pas de temps par intersection.
+  - **Features (14 dimensions)** : Encodages cycliques (heure, jour, mois), lags (1, 2, 3, 24), moyennes mobiles (6, 24), différence première.
+  - **Inférence** : Le GNN propage les informations entre les 4 junctions (GCNConv) et prédit le flux futur.
   - **Production** : La prédiction est encapsulée et envoyée vers le topic `traffic_predictions`.
 - **Technologie** : PySpark Structured Streaming opérant en mode local pour l'optimisation des ressources.
 
@@ -43,7 +44,7 @@ graph TD
     A[Fichier CSV] -->|Lecture| B(Simulateur)
     B -->|Produit JSON| C{Kafka: flux_data}
     C -->|Consomme| D[Spark Processor]
-    D -->|Inférence LSTM| E{Kafka: traffic_predictions}
+    D -->|Inférence GNN| E{Kafka: traffic_predictions}
     E -->|Consomme| F[FastAPI Gateway]
     F -->|Stockage RAM| G[État Actuel / Historique]
     F -->|Push| H[Client WebSocket]
@@ -53,7 +54,7 @@ graph TD
 - **Langage** : Python 3.11+
 - **Framework** : FastAPI
 - **Streaming** : Apache Kafka & PySpark
-- **Apprentissage Profond** : PyTorch (LSTM)
+- **Apprentissage Profond** : PyTorch (TrafficGNN — GCNConv)
 - **Conteneurisation** : Docker (Multi-stage build pour optimiser la taille des images)
 
 ## 🔄 Résilience et Robustesse

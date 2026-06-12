@@ -3,217 +3,250 @@
 ## Table of Contents
 1. [Project Overview](#1-project-overview)
 2. [Architecture Diagram](#2-architecture-diagram)
-3. [Backend Pipeline](#3-backend-pipeline)
+3. [Data Pipeline — Step by Step](#3-data-pipeline--step-by-step)
 4. [Data Formats](#4-data-formats)
 5. [Frontend Architecture](#5-frontend-architecture)
 6. [Map & Routing System](#6-map--routing-system)
 7. [Setup & Run Guide](#7-setup--run-guide)
+8. [Model & Training](#8-model--training)
 
 ---
 
 ## 1. Project Overview
 
-**Road Flow** is a real-time road traffic prediction system using an LSTM neural network. It streams live traffic data through Apache Kafka, processes it with PySpark Structured Streaming, runs inference with PyTorch, and displays results on an interactive Next.js map.
+**Road Flow** is a real-time road traffic prediction system using a **Graph Neural Network (GNN)**. It streams live traffic data through Apache Kafka (KRaft mode, no Zookeeper), processes it with **PySpark Structured Streaming**, runs inference with **PyTorch TrafficGNN**, and displays results on an interactive **Next.js 3D dashboard**.
 
 ### Tech Stack
 
 | Layer | Technology |
-|-------|-----------|
-| **Streaming** | Apache Kafka (Aiven Cloud, mTLS) |
-| **Processing** | Apache Spark 3.5.0 (PySpark Structured Streaming) |
-| **ML Inference** | PyTorch LSTM (2-layer, 128 hidden) |
-| **API Gateway** | FastAPI + WebSocket |
-| **Frontend** | Next.js 15, React 18, MapLibre GL |
-| **3D Visualization** | Three.js |
-| **Charts** | Recharts |
+|---|---|
+| **Streaming** | Apache Kafka 3.8 (KRaft, local or Aiven Cloud) |
+| **Processing** | Apache Spark 3.5.4 (PySpark Structured Streaming) |
+| **ML Inference** | PyTorch TrafficGNN (GCNConv, 102k params) |
+| **API Gateway** | FastAPI + WebSocket (thread-to-asyncio bridge) |
+| **Frontend** | Next.js 15, React 18, MapLibre GL, Three.js |
+| **Charts** | Recharts sparklines |
+| **Infrastructure** | Docker Compose (5 services + Kafka) |
 
-### Services (5 Docker services + Kafka infra)
+### Services (6 Docker containers)
 
-| Service | Port | Role |
-|---------|------|------|
-| `zookeeper` | 2181 | Kafka service discovery (local) |
-| `kafka` | 9092 | Kafka broker (local or Aiven Cloud) |
-| `mini-services/api/` | 8000 | FastAPI REST + WebSocket gateway |
-| `mini-services/simulator/` | 8001 | Reads CSV, publishes to Kafka input topic |
-| `mini-services/spark/` | — | Spark streaming: Kafka → LSTM → Kafka |
-| Frontend | 3000 | Next.js dashboard with MapLibre GL |
+| Service | Image | Port | Role |
+|---|---|---|---|
+| `kafka` | `apache/kafka:3.8.0` | `9092` | Event bus (KRaft — no Zookeeper) |
+| `frontend` | `road-traffic-pred-frontend` | `3000` | Next.js dashboard |
+| `backend` | `road-traffic-pred-backend` | `8000` | FastAPI + WebSocket gateway |
+| `simulator` | `road-traffic-pred-simulator` | `8001` | CSV replay → Kafka producer |
+| `spark-processor` | `road-traffic-pred-spark-processor` | — | PySpark Streaming + GNN inference |
 
-**Kafka modes**:
-- **Local (default)**: `confluentinc/cp-kafka:7.6.1` with auto-topic-creation, PLAINTEXT protocol
-- **Aiven Cloud**: External, mTLS authentication, requires certs in `certs/`
+**Kafka modes** (auto-detected):
+- **Local (default)**: `apache/kafka:3.8.0` KRaft, PLAINTEXT, no credentials
+- **Aiven Cloud**: External broker, mTLS (SSL) or SASL_SSL authentication
 
 ---
 
 ## 2. Architecture Diagram
 
-### Docker Deployment (recommended)
+### Docker Deployment
 
 ```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│  Simulator   │     │     Spark    │     │   FastAPI    │
-│  (port 8001) │     │  Processor   │     │  (port 8000) │
-│  CSV → Kafka │     │ Kafka→LSTM→  │     │  Kafka→WS    │
-│   producer   │     │   Kafka      │     │  consumer    │
-└──────┬───────┘     └──────┬───────┘     └──────┬───────┘
-       │                    │                    │
-       │   flux_data        │  traffic_preds     │  traffic_preds
-       ▼                    ▼                    ▼
-┌──────────────────────────────────────────────────────┐
-│                   Kafka Broker                       │
-│              (local or Aiven Cloud)                  │
-│         flux_data / traffic_predictions topics        │
-└──────────────────────┬───────────────────────────────┘
-                       │
-┌──────────────────────┴───────────────────────────────┐
-│                  Zookeeper (local)                    │
-└──────────────────────────────────────────────────────┘
-                       │
-                       │ WebSocket (predictions)
-                       ▼
-┌──────────────────────────────────────────────────────┐
-│               Next.js Frontend (port 3000)            │
-│       MapLibre GL + Three.js + Recharts Dashboard     │
-└──────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Docker Network                               │
+│                                                                     │
+│  ┌──────────────┐     ┌──────────────────┐     ┌──────────────┐    │
+│  │  Simulator   │     │   Spark/GNN      │     │   FastAPI    │    │
+│  │  (port 8001) │     │   Processor      │     │  (port 8000) │    │
+│  │  CSV→Kafka   │────▶│ Kafka→GNN→Kafka  │────▶│  Kafka→WS    │    │
+│  │  producer    │     │   inference      │     │  consumer    │    │
+│  └──────┬───────┘     └──────────────────┘     └──────┬───────┘    │
+│         │                    │                        │            │
+│         │   flux_data        │  traffic_predictions   │            │
+│         ▼                    ▼                        ▼            │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │              Kafka Broker (KRaft, port 9092)                 │   │
+│  │  Topics: flux_data / traffic_predictions (auto-created)     │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│         ┌──────────────────┐                                        │
+│         │   Next.js 15     │◀──── WebSocket (predictions)           │
+│         │  (port 3000)     │                                        │
+│         │  Dashboard       │                                        │
+│         └──────────────────┘                                        │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Data Pipeline (complete flow)
+### Data Pipeline
 
 ```
-CSV row
-  │ { DateTime, Junction, Vehicles, ID, hour, dayofweek, month,
-  │   is_weekend, hour_sin, hour_cos, veh_lag_1..3, veh_lag_24 }
-  ▼
-Simulator (main.py)
-  │ json.dumps(row.to_dict())
-  │ KafkaProducer → topic "flux_data"
-  ▼
-Spark Structured Streaming
-  │ readStream.format("kafka").option("subscribe", "flux_data")
-  │ from_json(col("value"), input_schema)
-  │
-  │ foreachBatch(predict_and_publish):
-  │   1. Per-junction deque buffer (maxlen=24)
-  │   2. Normalize: scaler_x.transform(seq[24,9])
-  │   3. LSTM inference: model(1,24,9) → scalar
-  │   4. Denormalize: scaler_y.inverse_transform([[scalar]])
-  │   5. Status: <30 fluid, <60 moderate, ≥60 congested
-  │   6. Publish to "traffic_predictions" topic
-  ▼
-KafkaProducer → topic "traffic_predictions"
-  ▼
-FastAPI Consumer (kafka_listener thread)
-  │ build_kafka_consumer() → mTLS SSL
-  │ for msg in consumer:
-  │   asyncio.run_coroutine_threadsafe(broadcast_queue.put(data), loop)
-  ▼
-WebSocket broadcast_worker
-  │ for ws in websocket_clients:
-  │   await ws.send_json(data)
-  ▼
-Browser (Next.js)
-  │ TrafficDashboard → useEffect → WebSocket
-  │ setJunctions(state update) → Map markers + Sidebar cards
+CSV Row ──▶ Simulator ──▶ Kafka[flux_data] ──▶ Spark/GNN ──▶ Kafka[predictions] ──▶ FastAPI ──▶ WS ──▶ Next.js
 ```
+
+**End-to-end latency**: ~500ms (95th percentile) from CSV read to browser render.
 
 ---
 
-## 3. Backend Pipeline
+## 3. Data Pipeline — Step by Step
 
-### 3.1 Simulator (`mini-services/simulator/main.py`)
+### 3.1 Simulator (`mini-services/simulator/simulator.py`)
 
-Reads CSV and publishes each row as JSON to Kafka.
+Reads a CSV of historical traffic data and publishes each row as a JSON message to the `flux_data` Kafka topic.
 
 ```python
-# SSL mTLS config (Aiven)
-opts = {
-    "security_protocol": "SSL",
-    "ssl_cafile":      KAFKA_SSL_CA,    # ca.pem
-    "ssl_certfile":     KAFKA_SSL_CERT,  # service.cert
-    "ssl_keyfile":      KAFKA_SSL_KEY,   # service.key
-}
-producer = KafkaProducer(**opts)
-producer.send("flux_data", value=json.dumps(row))
+async def run(self):
+    df = pd.read_csv(CSV_PATH)
+    df["DateTime"] = pd.to_datetime(df["DateTime"])
+    df = df.sort_values("DateTime")
+    for _, row in df.iterrows():
+        data = row.to_dict()
+        data["DateTime"] = data["DateTime"].strftime("%Y-%m-%d %H:%M:%S")
+        self.producer.send("flux_data", value=data)
+        await asyncio.sleep(STREAM_DELAY)  # configurable, default 2s
 ```
+
+**Kafka auth** — automatic fallback chain:
+
+| Mode | When | Auth |
+|---|---|---|
+| SSL (mTLS) | All 3 cert env vars set | `security_protocol="SSL"` with CA/cert/key |
+| SASL_SSL | Username + password set | `security_protocol="SASL_SSL"`, PLAIN mechanism |
+| PLAINTEXT | Default (local KRaft) | No auth |
 
 ### 3.2 Spark Processor (`mini-services/spark/spark_processor.py`)
 
-PySpark Structured Streaming job running on `local[*]`.
+The ML brain. A PySpark Structured Streaming job that:
 
-**Kafka readStream** (Java-side, SSL mTLS):
-```properties
-kafka.security.protocol=SSL
-kafka.ssl.truststore.location=ca.pem
-kafka.ssl.truststore.type=PEM
-kafka.ssl.keystore.location=/tmp/kafka_keystore_combined.pem
-kafka.ssl.keystore.type=PEM
+1. **Reads** from `flux_data` topic via `readStream.format("kafka")`
+2. **Buffers** the last 24 timesteps per junction in Python `deque` windows
+3. **Runs** the TrafficGNN model when all 4 junctions have enough data
+4. **Publishes** predictions to `traffic_predictions` topic
+
+**Spark streaming reader:**
+
+```python
+df = spark.readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", BOOTSTRAP_SERVER) \
+    .option("subscribe", TOPIC_INPUT) \
+    .load()
+
+json_df = df.select(
+    from_json(col("value").cast("string"), input_schema).alias("data")
+).select("data.*")
+
+query = json_df.writeStream \
+    .foreachBatch(process_microbatch) \
+    .start()
+query.awaitTermination()
 ```
 
-**Inference function** (`predict_and_publish`):
-1. Receive micro-batch from Structured Streaming
-2. Sort rows by `DateTime`
-3. For each row, append 9 features to per-junction deque (maxlen=24)
-4. When buffer has 24 steps: build sequence (24,9), normalize with `scaler_x`
-5. LSTM forward pass: `(1, 24, 9)` → scalar prediction
-6. Denormalize with `scaler_y.inverse_transform()`
-7. Publish result to `traffic_predictions` topic via KafkaProducer (Python mTLS)
+**Feature extraction** — 14 features per step:
 
-**Model Architecture**:
-```
-TrafficLSTM:
-  LSTM(9→128, 2 layers, dropout=0.3, batch_first=True)
-  → BatchNorm1d(128)
-  → Linear(128→64) → ReLU → Dropout(0.2)
-  → Linear(64→1)
+```python
+FEATURE_COLS = [
+    "hour_sin", "hour_cos",           # cyclic hour (0-23)
+    "dow_sin", "dow_cos",             # cyclic day-of-week (0-6)
+    "month_sin", "month_cos",         # cyclic month (1-12)
+    "is_weekend",                      # binary: weekend flag
+    "veh_lag_1", "veh_lag_2",         # vehicle count 1h/2h ago
+    "veh_lag_3", "veh_lag_24",        # vehicle count 3h/24h ago
+    "veh_ma_6", "veh_ma_24",          # moving averages (6h, 24h)
+    "veh_diff_1",                      # first difference (t - t-1)
+]
 ```
 
-**Features** (9 inputs):
+**GNN inference** — called on every micro-batch when buffers are full:
+
+```python
+@torch.no_grad()
+def predict_all_junctions() -> dict[int, float] | None:
+    # Wait for all 4 junctions to have 24-step buffers
+    for j in range(1, NUM_NODES + 1):
+        if len(feat_window[j]) < SEQ_LEN:
+            return None
+
+    # Stack: (4, 24, 14)
+    sequences = np.stack([
+        np.array(list(feat_window[j])) for j in range(1, NUM_NODES + 1)
+    ], axis=0)
+
+    # Normalize vehicle features only (cols 7:14)
+    sequences[:, :, 7:14] = (sequences[:, :, 7:14] - mean_y) / std_y
+
+    # GNN forward pass
+    x = torch.tensor(sequences, dtype=torch.float32).unsqueeze(0)
+    out = model(x).squeeze(0)  # (4, 1)
+
+    preds = {}
+    for i, jid in enumerate(range(1, NUM_NODES + 1)):
+        unscaled = float(out[i, 0]) * std_y + mean_y
+        preds[jid] = max(0.0, round(unscaled, 2))
+    return preds
 ```
-hour_sin, hour_cos       — cyclic time encoding
-dayofweek, month         — calendar features
-is_weekend               — binary flag
-veh_lag_1,2,3,24         — historical vehicle counts
+
+**Model architecture** (`TrafficGNN`):
+
+```
+Input:  (batch, 4 nodes, 24 steps, 14 features)
+  │
+  ├── Conv1d(14→64, kernel=24)   # Temporal projection per node
+  ├── ReLU
+  │
+  ├── GCNConv(64→64)             # Spatial: message passing across 4 junctions
+  ├── ReLU
+  │
+  ├── GCNConv(64→1)              # Output: 1 prediction per node
+  │
+Output: (batch, 4 nodes, 1)      # Predicted vehicles per junction
 ```
 
-**Scalers** (fitted on 38,476 training rows):
-- `scaler_x.pkl`: StandardScaler for 9 input features
-- `scaler_y.pkl`: StandardScaler for target Vehicles (mean=20.1, std=17.86)
+**Parameters**: 102,017 (mostly in the temporal projection layer).
 
-### 3.3 API Gateway (`mini-services/api/main.py`)
+### 3.3 FastAPI Gateway (`mini-services/api/main.py`)
 
-FastAPI application serving REST endpoints and WebSocket.
+Bridge between Kafka and the browser. No external databases — all state lives in RAM.
 
-**Endpoints**:
+```python
+# In-memory state (no Redis, no PostgreSQL)
+current_state: dict[int, dict] = {}         # junction_id → latest prediction
+history: dict[int, deque] = defaultdict(     # junction_id → last 2000 predictions
+    lambda: deque(maxlen=2000)
+)
+```
+
+**Thread → asyncio bridge** — Kafka polling runs in a background thread, dispatches into the event loop:
+
+```python
+def kafka_listener(loop):
+    consumer = build_kafka_consumer()
+    for msg in consumer:
+        data = msg.value
+        junction = data.get("Junction")
+        if junction is not None:
+            current_state[junction] = data
+            history[junction].append(data)
+        asyncio.run_coroutine_threadsafe(broadcast_queue.put(data), loop)
+```
+
+**WebSocket broadcast** — fans out to all connected clients:
+
+```python
+async def broadcast_worker():
+    while True:
+        data = await broadcast_queue.get()
+        dead = [ws for ws in websocket_clients if not await safe_send(ws, data)]
+        for ws in dead:
+            websocket_clients.discard(ws)
+```
+
+**API Endpoints:**
 
 | Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | Service status + active connections |
-| GET | `/traffic/current` | Latest prediction for all junctions |
-| GET | `/traffic/history/{junction_id}` | Last N predictions for a junction |
-| POST | `/traffic/ingest` | Receive traffic data (simulator fallback) |
-| GET | `/health` | Health check |
-| WS | `/ws/traffic` | Live prediction stream |
-
-**Architecture**:
-```
-Main Thread                    Background Thread
-─────────────                  ─────────────────
-FastAPI event loop             kafka_listener(loop)
-  ↑                                    │
-  │ broadcast_worker()                 │ KafkaConsumer (mTLS)
-  │   drains broadcast_queue           │ reads traffic_predictions
-  │   sends JSON to all WS             │
-  │   clients                          │ asyncio.run_coroutine_
-  │                                    │   threadsafe(
-  │   ┌──────────────────┐             │     broadcast_queue.put(data),
-  │   │ broadcast_queue   │←────────────     loop
-  │   │ (asyncio.Queue)   │             │   )
-  │   └──────────────────┘             │
-  │                                    │
-  │   ┌──────────────────┐             │
-  │   │ current_state     │←──────────── updates junction state
-  │   │ history (deque)   │             │
-  │   └──────────────────┘             │
-```
+|---|---|---|
+| `GET` | `/` | Service status + connection count |
+| `GET` | `/traffic/current` | Latest prediction per junction |
+| `GET` | `/traffic/history/{id}` | Last N predictions for one junction |
+| `POST` | `/traffic/ingest` | REST fallback for data ingestion |
+| `GET` | `/health` | Health check |
+| `WS` | `/ws/traffic` | Real-time prediction stream |
 
 ---
 
@@ -221,29 +254,33 @@ FastAPI event loop             kafka_listener(loop)
 
 ### 4.1 Simulator → Kafka (`flux_data` topic)
 
-JSON — one CSV row per message:
+14-feature JSON per message:
+
 ```json
 {
   "DateTime": "2017-03-11 09:00:00",
   "Junction": 3,
   "Vehicles": 11,
   "ID": "20170311093",
-  "hour": 9,
-  "dayofweek": 5,
-  "month": 3,
-  "is_weekend": 1,
   "hour_sin": 0.7071,
   "hour_cos": -0.7071,
+  "dow_sin": 0.0,
+  "dow_cos": 0.0,
+  "month_sin": 0.5,
+  "month_cos": 0.866,
+  "is_weekend": 1,
   "veh_lag_1": 12.0,
   "veh_lag_2": 8.0,
   "veh_lag_3": 7.0,
-  "veh_lag_24": 13.0
+  "veh_lag_24": 13.0,
+  "veh_ma_6": 10.2,
+  "veh_ma_24": 11.5,
+  "veh_diff_1": 4.0
 }
 ```
 
 ### 4.2 Spark Processor → Kafka (`traffic_predictions` topic)
 
-JSON — one prediction per row:
 ```json
 {
   "DateTime": "2017-03-11 09:00:00",
@@ -251,37 +288,35 @@ JSON — one prediction per row:
   "Vehicles": 11,
   "PredictedVehicles": 10.23,
   "Status": "fluid",
-  "Timestamp": "2026-05-30T04:45:44+00:00"
+  "Timestamp": "2026-06-12T14:00:00+00:00"
 }
 ```
 
-Status thresholds: `<30` fluid, `<60` moderate, `≥60` congested.
+**Status thresholds**: `<30` fluid, `<60` moderate, `≥60` congested.
 
 ### 4.3 WebSocket Payload (to Frontend)
 
-Same format as Spark output — forwarded directly:
+Same format as Spark output — forwarded verbatim:
+
 ```typescript
 type WsPayload = {
   Junction: number;
   Vehicles: number;
   PredictedVehicles: number;
-  Status: string;
+  Status: 'fluid' | 'moderate' | 'congested';
   DateTime: string;
+  Timestamp: string;  // ISO 8601
 };
 ```
 
-### 4.4 REST `/traffic/current` Response
+### 4.4 REST Response (`/traffic/current`)
 
 ```json
 [
-  {
-    "DateTime": "2017-03-11 09:00:00",
-    "Junction": 1,
-    "Vehicles": 88,
-    "PredictedVehicles": 85.4,
-    "Status": "congested",
-    "Timestamp": "2026-05-30T04:45:44+00:00"
-  }
+  { "Junction": 1, "Vehicles": 88, "PredictedVehicles": 85.4, "Status": "congested", "DateTime": "2017-03-11 09:00:00" },
+  { "Junction": 2, "Vehicles": 14, "PredictedVehicles": 12.1, "Status": "fluid",     "DateTime": "2017-03-11 09:00:00" },
+  { "Junction": 3, "Vehicles": 11, "PredictedVehicles": 10.2, "Status": "fluid",     "DateTime": "2017-03-11 09:00:00" },
+  { "Junction": 4, "Vehicles": 47, "PredictedVehicles": 44.8, "Status": "moderate",  "DateTime": "2017-03-11 09:00:00" }
 ]
 ```
 
@@ -292,57 +327,47 @@ type WsPayload = {
 ### 5.1 Component Tree
 
 ```
-src/app/
-├── layout.tsx              — Root layout (metadata, fonts)
-├── page.tsx                — Home: renders <Launchpad />
-├── dashboard/
-│   └── page.tsx            — Dashboard: renders <TrafficDashboard />
-└── api/
-    └── traffic/
-        └── predictions/    — (unused) simulated predictions API
-
-src/components/traffic/
-├── Launchpad.tsx            — Landing page: search, quick routes, junction grid
-├── TrafficDashboard.tsx     — Main orchestrator: WebSocket, state, car routing
-├── TrafficMap.tsx           — MapLibre GL map: markers, routes, popups
-├── MapCarAnimator.tsx       — Animated Tesla car on map with re-routing
-├── Sidebar.tsx              — Junction cards, metrics, sparklines, 3D car
-├── ThreeCarVisualizer.tsx   — Three.js 3D car in sidebar (spinning preview)
-└── TimeSlider.tsx           — 0-24h range slider
+src/
+├── app/
+│   ├── layout.tsx                 — Root layout (metadata, dark theme)
+│   ├── page.tsx                   — Home: renders <Launchpad />
+│   └── dashboard/
+│       └── page.tsx               — Dashboard: renders <TrafficDashboard />
+│
+└── components/traffic/
+    ├── Launchpad.tsx               — Landing: search, quick routes, junction grid
+    ├── TrafficDashboard.tsx        — Orchestrator: WebSocket, state, routing
+    ├── TrafficMap.tsx              — MapLibre GL: markers, routes, popups
+    ├── MapCarAnimator.tsx          — Animated car (60fps, re-routing)
+    ├── Sidebar.tsx                 — Cards, metrics, sparklines, 3D car view
+    ├── ThreeCarVisualizer.tsx      — Three.js 3D model in sidebar
+    └── TimeSlider.tsx              — 0-24h range filter
 ```
 
-### 5.2 Data Flow
+### 5.2 Frontend Data Flow
 
 ```
 WebSocket (ws://localhost:8000/ws/traffic)
   │
-  ├─→ setJunctions() → Map markers (color, popup)
-  │                  → Sidebar cards (flow, sparkline)
-  │                  → Routes recalculation
-  │                  → Live metrics (MAE/RMSE buffer)
+  ├─→ setJunctions()
+  │     ├── Map markers: color by status (emerald/amber/red)
+  │     ├── Sidebar cards: live value, sparkline, accuracy
+  │     ├── Route recalculation (Dijkstra, weighted)
+  │     └── Live metrics (MAE/RMSE rolling buffer)
   │
-  └─→ REST fallback (http://localhost:8000/traffic/current)
-       on component mount if WebSocket not yet connected
+  └─→ REST fallback (/traffic/current) on mount
 
 Junction Selection:
-  Map marker click → setSelectedJunction(J1..J4)
-    ├─→ Camera flyTo junction (once per selection change)
-    ├─→ Popup on map
-    └─→ 3D car visualizer in sidebar
+  Click marker → flyTo junction → popup → 3D car sidebar
 
 Car Routing:
-  Sidebar "GO" click → buildCarRoute(origin, target)
-    ├─→ findBestPath() (Dijkstra, congestion-weighted)
-    ├─→ Build fullCoords from roadGeometries
-    └─→ MapCarAnimator: animate car along path
-         ├─→ Camera follows car (panTo every 20 frames)
-         └─→ Re-routing every 3s if congestion changes
+  Sidebar "GO" → Dijkstra(congestion-weighted) → animate along path
+  → re-route every 3s if congestion changes
 ```
 
-### 5.3 Live Metrics Computation
+### 5.3 Live Metrics
 
 ```typescript
-// Module-level rolling buffer (200 samples)
 const errorsBuffer: number[] = [];
 
 // On each WebSocket message:
@@ -350,29 +375,23 @@ const err = Math.abs(data.Vehicles - data.PredictedVehicles);
 errorsBuffer.push(err);
 if (errorsBuffer.length > 200) errorsBuffer.shift();
 
-// Every 10 messages:
-const mae = errorsBuffer.reduce((a,b) => a+b, 0) / errorsBuffer.length;
-const rmse = Math.sqrt(errorsBuffer.reduce((a,b) => a+b*b, 0) / errorsBuffer.length);
-const accuracy = (errorsBuffer.filter(e => e <= 5).length / errorsBuffer.length) * 100;
+const mae  = errorsBuffer.reduce((a, b) => a + b, 0) / errorsBuffer.length;
+const rmse = Math.sqrt(errorsBuffer.reduce((a, b) => a + b*b, 0) / errorsBuffer.length);
 ```
 
-### 5.4 WebSocket Connection
+### 5.4 WebSocket Connection with Auto-Reconnect
 
 ```typescript
 useEffect(() => {
-  const wsUrl = `ws://localhost:8000/ws/traffic`;
-
   const connect = () => {
-    const ws = new WebSocket(wsUrl);
-    ws.onopen = () => setWsConnected(true);
+    const ws = new WebSocket(`ws://localhost:8000/ws/traffic`);
     ws.onmessage = (event) => {
       const data: WsPayload = JSON.parse(event.data);
-      // Update junctions state...
+      updateJunctionState(data);
     };
-    ws.onclose = () => setTimeout(connect, 5000); // auto-reconnect
+    ws.onclose = () => setTimeout(connect, 5000);
   };
   connect();
-  return () => ws.close();
 }, []);
 ```
 
@@ -380,63 +399,52 @@ useEffect(() => {
 
 ## 6. Map & Routing System
 
-### 6.1 Map Setup
+### 6.1 Map Configuration
 
-```
-MapLibre GL (react-map-gl/maplibre)
-├── Basemap: CartoDB dark-matter / positron
-├── InitialView: Paris center [2.3522, 48.8566], zoom 12.5
-├── Camera: pitch 58°, unique bearing per junction
-└── Controls: dark/light toggle, zoom, reset view
-```
+- **Engine**: MapLibre GL via `react-map-gl/maplibre`
+- **Basemap**: CartoDB dark-matter (toggle to positron)
+- **Initial view**: Paris center `[2.3522, 48.8566]`, zoom 12.5
+- **Camera**: pitch 58°, unique bearing per junction
 
 ### 6.2 Junction Markers
 
-Each junction (J1-J4) is a Marker with:
-- Animated pulsing halo (framer-motion, 2.5s loop)
-- Outer ring + central dot with colored glow
-- Color: emerald (fluid), amber (moderate), red/orange (congested)
-- Hover label showing junction name
-- Click → camera flyTo + popup with live/predicted flow
+4 junctions (J1–J4) as animated markers:
+- Pulsing halo (framer-motion, 2.5s loop)
+- Color by status: emerald (fluid), amber (moderate), red (congested)
+- Click → camera flyTo + popup with live/predicted flow + 3D car preview
 
-### 6.3 Route Lines
+### 6.3 Road Geometries
 
-Real Paris road geometries rendered as GeoJSON LineStrings:
-- **3-layer rendering**: outer glow (blur 10px, 14px wide) → mid glow (blur 5px, 8px) → solid line (3.5px)
-- **Animated dash pattern**: white dashes on top for "flow" effect
-- **Color by congestion**: emerald/amber/red based on average endpoint flow
+6 routes connecting the junctions, tracing real Paris streets:
 
-### 6.4 Road Geometries
+| Route | Path |
+|---|---|
+| J1↔J2 | Gare du Nord → Champs-Élysées |
+| J1↔J3 | Gare du Nord → Place d'Italie |
+| J1↔J4 | Gare du Nord → Bastille |
+| J2↔J3 | Champs-Élysées → Place d'Italie |
+| J2↔J4 | Champs-Élysées → Bastille |
+| J3↔J4 | Place d'Italie → Bastille |
 
-6 routes connecting the 4 junctions, each with 20-35 waypoints tracing actual Paris streets:
-```
-J1-J2: Gare du Nord → Champs-Élysées
-J1-J3: Gare du Nord → Place d'Italie
-J1-J4: Gare du Nord → Bastille
-J2-J3: Champs-Élysées → Place d'Italie
-J2-J4: Champs-Élysées → Bastille
-J3-J4: Place d'Italie → Bastille
-```
+### 6.4 Dijkstra Routing
 
-### 6.5 Car Routing (Dijkstra)
+Edge weights updated in real-time based on traffic status:
 
-Edge weights by congestion:
-| Status | Weight |
-|--------|--------|
-| fluid | 1.0x |
-| moderate | 3.0x |
-| congested | 8.0x |
+| Status | Weight | Traffic |
+|---|---|---|
+| `fluid` | 1.0× | Normal flow |
+| `moderate` | 3.0× | Slower |
+| `congested` | 8.0× | Heavy traffic |
 
-The car follows the real road geometry coordinates along the optimal path. Re-routing occurs every 3 seconds — if a segment on the current path becomes congested and a better path exists, the car dynamically switches route mid-journey.
+The car follows real road geometry waypoints (20-35 per route). Re-routing every 3 seconds — switches path if a segment becomes congested.
 
-### 6.6 Car Animation
+### 6.5 Car Animation
 
-- **60fps** via `requestAnimationFrame`
-- Position interpolated between consecutive waypoints
-- Direction calculated as `atan2(dy, dx)`
+- **60 FPS** via `requestAnimationFrame`
+- Position interpolated between waypoints
+- Direction: `atan2(dy, dx)` on consecutive points
 - Camera follows via `map.panTo()` every 20 frames
-- Trail dots behind car with fade effect
-- Tesla Model S style: grey metallic, panoramic glass roof, LED lights
+- Trail dots with fade effect behind car
 
 ---
 
@@ -446,162 +454,99 @@ The car follows the real road geometry coordinates along the optimal path. Re-ro
 
 **With Docker (recommended):**
 ```bash
-Docker + Docker Compose v2   # Only requirements!
+Docker + Docker Compose v2   # That's it!
 ```
 
-**Without Docker (manual setup):**
+**Without Docker (manual dev):**
 ```bash
-Java 17+      # For Apache Spark
-Python 3.12+  # Backend services
-Node.js 22+   # Frontend
+Java 21+       # Apache Spark
+Python 3.11+   # Backend + ML
+Node.js 20+    # Frontend
 ```
 
-### 7.2 Environment Setup
+### 7.2 Quick Start (Docker)
 
-**1. Clone & install Python dependencies:**
 ```bash
-cd /home/jojo/road-traffic-pred
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+git clone <repo-url> && cd road-traffic-pred
+
+# Default: local Kafka (KRaft)
+cp .env.example .env
+make up
 ```
 
-**2. Install Node.js dependencies:**
-```bash
-npm install
-```
+Access:
+- **Dashboard**: http://localhost:3000/dashboard
+- **API docs**: http://localhost:8000/docs
+- **Spark UI**: http://localhost:4040
 
-**3. Configure `.env`:**
+### 7.3 Using Aiven Cloud Kafka
+
 ```bash
-# Kafka Aiven
+# 1. Edit .env with Aiven credentials
 KAFKA_HOST=kafka-xxxxx.h.aivencloud.com
 KAFKA_PORT=17498
-KAFKA_USERNAME=avnadmin
-KAFKA_PASSWORD=YOUR_AIVEN_PASSWORD_HERE
+KAFKA_SSL_CA=certs/ca.pem
+KAFKA_SSL_CERT=certs/service.cert
+KAFKA_SSL_KEY=certs/service.key
 
-# Cert paths (for mTLS)
-KAFKA_SSL_CA=/home/jojo/road-traffic-pred/certs/ca.pem
-KAFKA_SSL_CERT=/home/jojo/road-traffic-pred/certs/service.cert
-KAFKA_SSL_KEY=/home/jojo/road-traffic-pred/certs/service.key
-
-# Topics
-KAFKA_TOPIC_INPUT=flux_data
-KAFKA_TOPIC_OUTPUT=traffic_predictions
-
-# Paths
-CSV_PATH=/home/jojo/road-traffic-pred/data/test.csv
-MODEL_PATH=/home/jojo/road-traffic-pred/models/global_model.pt
+# 2. Place certificates in certs/
+# 3. Run (comment out kafka service in compose first)
+docker compose --profile full up -d
 ```
 
-### 7.3 Certificates Setup
-
-Place Aiven SSL certificates in `certs/`:
-```
-certs/
-├── ca.pem           # CA certificate
-├── service.cert     # Client certificate
-└── service.key      # Client private key (PKCS#8)
-```
-
-### 7.4 Spark Installation
+### 7.4 Managing the Stack
 
 ```bash
-# Download Spark 3.5.0
-wget https://archive.apache.org/dist/spark/spark-3.5.0/spark-3.5.0-bin-hadoop3.tgz
-tar xzf spark-3.5.0-bin-hadoop3.tgz -C /home/jojo/tools/
-# Ensure SPARK_HOME in .env matches:
-SPARK_HOME=/home/jojo/tools/spark
+make up         # Full stack (build + launch)
+make up-core    # Core only (no simulator/spark)
+make logs       # Follow all logs
+make ps         # Container status
+make down       # Stop + clean volumes
+make rebuild    # Full rebuild from scratch
 ```
 
-### 7.5 Running
+---
 
-#### Option A: Docker (one command — RECOMMENDED)
+## 8. Model & Training
 
-```bash
-# Full stack: Frontend + API + Kafka + Spark + Simulator
-docker compose --profile full up --build
-
-# Minimal: Frontend + API + Kafka
-docker compose up --build
-```
-
-This starts (Docker services):
-1. Zookeeper (service discovery for Kafka)
-2. Kafka Broker (local, no credentials needed)
-3. FastAPI Gateway on port 8000 (waits for Kafka health)
-4. Simulator on port 8001 — reads CSV → publishes to Kafka `flux_data`
-5. Spark Processor — consumes `flux_data`, runs LSTM inference, publishes to `traffic_predictions`
-6. Frontend on port 3000 — connects to API via WebSocket
-
-**Using Aiven Cloud Kafka** (optional):
-```bash
-# Edit .env.aiven with your credentials, then:
-docker compose --env-file .env --env-file .env.aiven --profile full up --build
-```
-
-#### Option B: Manual (development)
-
-**Terminal 1 — Backend services:**
-```bash
-cd /home/jojo/road-traffic-pred
-./start-services.sh --with-simulator
-```
-
-This starts (in background):
-1. FastAPI Gateway on port 8000
-2. Simulator (reads CSV → Kafka)
-3. Spark Processor (Kafka → LSTM → Kafka)
-
-**Terminal 2 — Frontend:**
-```bash
-cd /home/jojo/road-traffic-pred
-npm run dev
-```
-
-### 7.6 Access
-
-| Service | URL |
-|---------|-----|
-| Frontend | http://localhost:3000 |
-| Dashboard | http://localhost:3000/dashboard |
-| API | http://localhost:8000 |
-| API Docs | http://localhost:8000/docs |
-| Spark UI | http://localhost:4040 |
-
-### 7.7 Expected Output
-
-```
-# Backend logs should show:
-✅ Connecté à Kafka. Envoi vers topic 'flux_data'...
-✅ PyTorch LSTM model loaded.
-✅ Scalers loaded (y: mean=20.1, scale=17.9)
-🚀 Spark Streaming Job is running (Kafka → LSTM → Kafka) …
-⚡ Processing micro-batch 0 (1 rows) …
-🔮 Published 1 predictions to topic 'traffic_predictions'.
-   Sample: J3 | Actual=11 veh | Pred=10.5 veh | Status=fluid
-📡 Kafka consumer listening on 'traffic_predictions' …
-🔌 WebSocket client connected (1 total)
-```
-
-### 7.8 Model & Scaler Files
+### 8.1 Model Files
 
 | File | Description |
-|------|------------|
-| `models/global_model.pt` | Trained LSTM weights |
-| `models/scaler_x.pkl` | Feature StandardScaler |
-| `models/scaler_y.pkl` | Target StandardScaler (fit on 38,476 rows) |
+|---|---|
+| `models/gnn_model.pth` | Trained TrafficGNN weights (102,017 params) |
+| `models/scaler_y.pkl` | Target StandardScaler (mean=20.1, std=17.86) |
 
-### 7.9 Training Data
+### 8.2 Performance — Junction MAE
 
-| File | Rows | Columns |
-|------|------|---------|
-| `data/train.csv` | 38,476 | 14 (DateTime, Junction, Vehicles, features) |
-| `data/test.csv` | 9,621 | 14 (same schema) |
+| Junction | MAE (vehicles) |
+|---|---|
+| **J1** | 3.73 |
+| **J2** | 1.98 |
+| **J3** | 2.61 |
+| **J4** | 2.13 |
 
-**Training config** (from notebook):
+### 8.3 Training Data
+
+| File | Rows | Description |
+|---|---|---|
+| `data/train.csv` | ~38k | Training set (14 features + target) |
+| `data/test_gnn.csv` | ~10k | Test set (used by simulator) |
+
+**Training config**:
 - Sequence length: 24 time steps
-- Train/test split: 80/20 per junction
-- Target: Vehicles (next time step after sequence)
-- Scaler: StandardScaler on features and target
-- Model: LSTM 2×128, BatchNorm, Dropout
-- Performance: MAE 2.0-3.7 per junction (Global model)
+- Feature dimension: 14 (6 cyclic time + 1 binary + 7 derived vehicle stats)
+- Graph: 4 nodes (junctions), edges based on road connectivity
+- Target: Vehicles (next time step, denormalized with `std_y=17.86`)
+- Architecture: Conv1d → GCNConv → GCNConv
+
+### 8.4 Output Example
+
+```
+Spark streaming log:
+✅ TrafficGNN loaded from /app/models/gnn_model.pth (102,017 params)
+🚀 Spark Streaming (GNN) — Kafka → GNN → Kafka
+🔮 J1: Actual=42 veh → Pred=38.5 veh | Status=moderate
+🔮 J2: Actual=12 veh → Pred=10.8 veh | Status=fluid
+🔮 J3: Actual=55 veh → Pred=52.1 veh | Status=moderate
+🔮 J4: Actual=8 veh  → Pred=7.2 veh  | Status=fluid
+```
